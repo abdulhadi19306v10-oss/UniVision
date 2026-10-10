@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Environments
+.env
+.env.*
+venv/
+env/
+ENV/
+.venv/
+
+# Local databases & sync queues
+*.db
+*.sqlite3
+desktop/app/storage/*.db
+
+# PyInstaller / Build
+dist/
+build/
+*.spec
+
+# Flutter / Mobile
+mobile/.dart_tool/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/build/
+mobile/.pub/
+mobile/.pub-cache/
+
+# OS and Editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log
