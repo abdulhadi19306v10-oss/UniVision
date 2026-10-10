@@ -64,5 +64,47 @@ def test_desktop_mvc_eda():
         pass
     print("[PASSED] Desktop MVC + EDA test PASSED successfully!")
 
+def test_tracker_multi_face():
+    print("Testing ConsecutiveFrameTracker multi-face concurrent tracking...")
+    from app.recognition.tracker import ConsecutiveFrameTracker
+    tracker = ConsecutiveFrameTracker(required_consecutive_frames=3, max_idle_decay=2)
+
+    # Frame 1: Student 10 and 20 present
+    c1, n1 = tracker.update_student(10)
+    c2, n2 = tracker.update_student(20)
+    tracker.decay_absent_students({10, 20})
+    assert not c1 and not n1
+    assert not c2 and not n2
+
+    # Frame 2: Student 10 and 20 present
+    c1, n1 = tracker.update_student(10)
+    c2, n2 = tracker.update_student(20)
+    tracker.decay_absent_students({10, 20})
+    assert not c1 and not c2
+
+    # Frame 3: Both reach streak 3 -> confirmed & newly marked
+    c1, n1 = tracker.update_student(10)
+    c2, n2 = tracker.update_student(20)
+    tracker.decay_absent_students({10, 20})
+    assert c1 and n1
+    assert c2 and n2
+
+    # Frame 4: Student 10 still present, Student 20 absent
+    c1, n1 = tracker.update_student(10)
+    tracker.decay_absent_students({10})
+    assert c1 and not n1 # Confirmed, but not newly marked
+
+    # Frame 5 & 6: Student 20 still absent -> decayed
+    tracker.decay_absent_students({10})
+    tracker.decay_absent_students({10})
+    assert tracker.streak_counts.get(20, 0) == 0
+
+    # Reset session
+    tracker.reset_session()
+    assert len(tracker.streak_counts) == 0
+    assert len(tracker.confirmed_this_session) == 0
+    print("[PASSED] ConsecutiveFrameTracker multi-face tracking PASSED successfully!")
+
 if __name__ == "__main__":
     test_desktop_mvc_eda()
+    test_tracker_multi_face()

@@ -23,13 +23,21 @@ class SFaceEmbedder:
             target_id=cv2.dnn.DNN_TARGET_CPU
         )
 
-    def extract_feature(self, frame: np.ndarray, face_box_landmarks: np.ndarray) -> np.ndarray:
+    def extract_feature(self, frame: np.ndarray, face_box_landmarks: np.ndarray) -> Optional[np.ndarray]:
         """
         Aligns the face crop using 5 landmarks and extracts a 128-d embedding vector.
+        Safely returns None if alignment or feature extraction fails.
         """
-        aligned_face = self.recognizer.alignCrop(frame, face_box_landmarks)
-        feature = self.recognizer.feature(aligned_face)
-        return feature.flatten()
+        try:
+            aligned_face = self.recognizer.alignCrop(frame, face_box_landmarks)
+            if aligned_face is None or aligned_face.size == 0:
+                return None
+            feature = self.recognizer.feature(aligned_face)
+            if feature is None:
+                return None
+            return feature.flatten()
+        except Exception:
+            return None
 
     def average_embeddings(self, embeddings_list: list) -> np.ndarray:
         """
