@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
     QFrame, QGridLayout, QSplitter, QTextEdit, QComboBox
 )
 from PySide6.QtGui import QImage, QPixmap, QFont, QColor
-from PySide6.QtCore import Qt, Slot, QTimer
+from PySide6.QtCore import Qt, Slot, QTimer, QSize
 
 from .theme import NEUMORPHIC_DARK_QSS
+from .icons import create_vector_icon
 from ..events.event_bus import desktop_event_bus
 from ..storage.local_db import LocalStorage
 from ..storage.sync_client import CloudSyncClient
@@ -29,12 +30,13 @@ class MainWindow(QMainWindow):
     Modern Neumorphic Dark UI for UniVision / Focus Attendance.
     Implements a clean MVC View Layer communicating with Domain Controllers
     and background workers purely through Qt Signals (Event-Driven Architecture).
+    Professional typography and crisp vector iconography throughout.
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UniVision — Neumorphic Biometric Attendance (MVC + EDA)")
-        self.resize(1280, 820)
-        self.setMinimumSize(1080, 700)
+        self.setWindowTitle("UniVision — Biometric Classroom Station (MVC + EDA)")
+        self.resize(1280, 840)
+        self.setMinimumSize(1080, 720)
 
         # Apply Global Neumorphic Stylesheet
         self.setStyleSheet(NEUMORPHIC_DARK_QSS)
@@ -123,50 +125,53 @@ class MainWindow(QMainWindow):
         logo_layout.setContentsMargins(8, 0, 8, 16)
         logo_layout.setSpacing(4)
 
-        app_title = QLabel("UniVision")
+        app_title = QLabel("UNIVISION")
         app_title.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        app_title.setStyleSheet("color: #38bdf8; letter-spacing: 1px;")
+        app_title.setStyleSheet("color: #38bdf8; letter-spacing: 2px;")
 
         app_subtitle = QLabel("Biometric Station")
         app_subtitle.setFont(QFont("Segoe UI", 10))
-        app_subtitle.setStyleSheet("color: #94a3b8;")
+        app_subtitle.setStyleSheet("color: #94a3b8; font-weight: 500;")
 
         logo_layout.addWidget(app_title)
         logo_layout.addWidget(app_subtitle)
         layout.addWidget(logo_box)
 
-        # Navigation Buttons
+        # Navigation Buttons with crisp Vector Icons
         self.nav_buttons = []
         nav_items = [
-            ("📹  Live Monitoring", 0),
-            ("👤  Biometrics Enroll", 1),
-            ("📊  Attendance Logs", 2),
-            ("🔄  Cloud & Diagnostics", 3)
+            ("video", "Live Monitoring", 0),
+            ("user", "Biometrics Enroll", 1),
+            ("logs", "Attendance Logs", 2),
+            ("cloud", "Cloud & Diagnostics", 3)
         ]
 
-        for text, index in nav_items:
-            btn = QPushButton(text)
+        for icon_name, text, index in nav_items:
+            btn = QPushButton(f"  {text}")
+            btn.setIcon(create_vector_icon(icon_name, "#94a3b8", 18))
+            btn.setIconSize(QSize(18, 18))
             btn.setProperty("class", "nav-btn")
             btn.setCheckable(True)
             btn.clicked.connect(lambda checked=False, idx=index: self.switch_page(idx))
             layout.addWidget(btn)
-            self.nav_buttons.append(btn)
+            self.nav_buttons.append((btn, icon_name))
 
-        self.nav_buttons[0].setChecked(True)
-        self.nav_buttons[0].setProperty("active", "true")
+        self.nav_buttons[0][0].setChecked(True)
+        self.nav_buttons[0][0].setProperty("active", "true")
+        self.nav_buttons[0][0].setIcon(create_vector_icon("video", "#38bdf8", 18))
 
         layout.addStretch()
 
-        # Offline Engine Status Chip in Sidebar
+        # Offline Engine Status Card in Sidebar
         offline_card = QFrame()
         offline_card.setProperty("class", "neumorphic-card")
         offline_layout = QVBoxLayout(offline_card)
-        offline_layout.setContentsMargins(12, 12, 12, 12)
-        offline_layout.setSpacing(6)
+        offline_layout.setContentsMargins(14, 12, 14, 12)
+        offline_layout.setSpacing(4)
 
-        offline_title = QLabel("STORAGE ENGINE")
-        offline_title.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold;")
-        self.lbl_storage_status = QLabel("🟢 Offline-First (SQLite)")
+        offline_title = QLabel("LOCAL STORAGE")
+        offline_title.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+        self.lbl_storage_status = QLabel("SQLite Offline-First")
         self.lbl_storage_status.setStyleSheet("color: #34d399; font-weight: bold; font-size: 11px;")
 
         offline_layout.addWidget(offline_title)
@@ -177,10 +182,12 @@ class MainWindow(QMainWindow):
 
     def switch_page(self, page_index: int):
         self.stacked_pages.setCurrentIndex(page_index)
-        for i, btn in enumerate(self.nav_buttons):
+        for i, (btn, icon_name) in enumerate(self.nav_buttons):
             is_active = (i == page_index)
             btn.setChecked(is_active)
             btn.setProperty("active", "true" if is_active else "false")
+            color = "#38bdf8" if is_active else "#94a3b8"
+            btn.setIcon(create_vector_icon(icon_name, color, 18))
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
@@ -202,7 +209,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
 
         # Left: Session Context Label
-        self.lbl_active_header = QLabel("No active lecture session. Configure and start session below.")
+        self.lbl_active_header = QLabel("No active lecture session. Configure course and start session below.")
         self.lbl_active_header.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
         self.lbl_active_header.setStyleSheet("color: #cbd5e1;")
         layout.addWidget(self.lbl_active_header)
@@ -213,19 +220,19 @@ class MainWindow(QMainWindow):
         kpi_present = QFrame()
         kpi_present.setProperty("class", "kpi-card")
         kpi_p_lay = QHBoxLayout(kpi_present)
-        kpi_p_lay.setContentsMargins(10, 6, 10, 6)
-        self.lbl_kpi_present = QLabel("👥 Present: 0")
-        self.lbl_kpi_present.setStyleSheet("color: #38bdf8; font-weight: bold;")
+        kpi_p_lay.setContentsMargins(12, 6, 12, 6)
+        self.lbl_kpi_present = QLabel("PRESENT: 0")
+        self.lbl_kpi_present.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 12px; letter-spacing: 0.5px;")
         kpi_p_lay.addWidget(self.lbl_kpi_present)
         layout.addWidget(kpi_present)
 
-        # KPI 2: Live FPS Counter
+        # KPI 2: Live Inference FPS Counter
         kpi_fps = QFrame()
         kpi_fps.setProperty("class", "kpi-card")
         kpi_f_lay = QHBoxLayout(kpi_fps)
-        kpi_f_lay.setContentsMargins(10, 6, 10, 6)
-        self.lbl_kpi_fps = QLabel("⚡ 0.0 FPS")
-        self.lbl_kpi_fps.setStyleSheet("color: #34d399; font-weight: bold;")
+        kpi_f_lay.setContentsMargins(12, 6, 12, 6)
+        self.lbl_kpi_fps = QLabel("FPS: 0.0")
+        self.lbl_kpi_fps.setStyleSheet("color: #34d399; font-weight: bold; font-size: 12px; letter-spacing: 0.5px;")
         kpi_f_lay.addWidget(self.lbl_kpi_fps)
         layout.addWidget(kpi_fps)
 
@@ -233,9 +240,9 @@ class MainWindow(QMainWindow):
         kpi_sync = QFrame()
         kpi_sync.setProperty("class", "kpi-card")
         kpi_s_lay = QHBoxLayout(kpi_sync)
-        kpi_s_lay.setContentsMargins(10, 6, 10, 6)
-        self.lbl_kpi_sync = QLabel("📡 Queue: 0")
-        self.lbl_kpi_sync.setStyleSheet("color: #fbbf24; font-weight: bold;")
+        kpi_s_lay.setContentsMargins(12, 6, 12, 6)
+        self.lbl_kpi_sync = QLabel("SYNC QUEUE: 0")
+        self.lbl_kpi_sync.setStyleSheet("color: #fbbf24; font-weight: bold; font-size: 12px; letter-spacing: 0.5px;")
         kpi_s_lay.addWidget(self.lbl_kpi_sync)
         layout.addWidget(kpi_sync)
 
@@ -257,7 +264,7 @@ class MainWindow(QMainWindow):
         bar_layout.setContentsMargins(14, 10, 14, 10)
         bar_layout.setSpacing(12)
 
-        lbl_course = QLabel("Course:")
+        lbl_course = QLabel("Course Code:")
         lbl_course.setStyleSheet("color: #94a3b8; font-weight: bold;")
         bar_layout.addWidget(lbl_course)
 
@@ -266,24 +273,29 @@ class MainWindow(QMainWindow):
         self.inp_quick_course_code.setPlaceholderText("Code")
         bar_layout.addWidget(self.inp_quick_course_code)
 
+        lbl_name = QLabel("Name:")
+        lbl_name.setStyleSheet("color: #94a3b8; font-weight: bold;")
+        bar_layout.addWidget(lbl_name)
+
         self.inp_quick_course_name = QLineEdit("Software Architecture")
         self.inp_quick_course_name.setPlaceholderText("Course Name")
         bar_layout.addWidget(self.inp_quick_course_name)
 
         self.inp_quick_course_id = QLineEdit("101")
-        self.inp_quick_course_id.setFixedWidth(60)
+        self.inp_quick_course_id.setFixedWidth(50)
         self.inp_quick_course_id.setPlaceholderText("ID")
         bar_layout.addWidget(self.inp_quick_course_id)
 
         # Primary Start / End Session Toggle Button
-        self.btn_session_toggle = QPushButton("▶  Start Lecture Session")
+        self.btn_session_toggle = QPushButton("  Start Lecture Session")
+        self.btn_session_toggle.setIcon(create_vector_icon("play", "#ffffff", 14))
         self.btn_session_toggle.setProperty("class", "btn-success")
         self.btn_session_toggle.clicked.connect(self.on_session_toggle_clicked)
         bar_layout.addWidget(self.btn_session_toggle)
 
         # Session Duration Timer Badge
-        self.lbl_session_elapsed = QLabel("⏱ 00:00:00")
-        self.lbl_session_elapsed.setStyleSheet("color: #64748b; font-weight: bold; font-size: 13px;")
+        self.lbl_session_elapsed = QLabel("TIME: 00:00:00")
+        self.lbl_session_elapsed.setStyleSheet("color: #64748b; font-weight: bold; font-size: 12px; letter-spacing: 0.5px;")
         bar_layout.addWidget(self.lbl_session_elapsed)
 
         page_layout.addWidget(session_bar)
@@ -319,7 +331,8 @@ class MainWindow(QMainWindow):
 
         # Camera control bottom bar
         cam_bar = QHBoxLayout()
-        self.btn_toggle_cam = QPushButton("Start Camera Stream")
+        self.btn_toggle_cam = QPushButton("  Start Camera Stream")
+        self.btn_toggle_cam.setIcon(create_vector_icon("video", "#ffffff", 14))
         self.btn_toggle_cam.setProperty("class", "btn-primary")
         self.btn_toggle_cam.clicked.connect(self.on_toggle_camera_clicked)
         cam_bar.addWidget(self.btn_toggle_cam)
@@ -379,7 +392,8 @@ class MainWindow(QMainWindow):
         self.inp_manual_name.setPlaceholderText("Student Name...")
         m_lay.addWidget(self.inp_manual_name)
 
-        btn_manual_mark = QPushButton("+ Check In")
+        btn_manual_mark = QPushButton("  Check In")
+        btn_manual_mark.setIcon(create_vector_icon("plus", "#ffffff", 14))
         btn_manual_mark.setProperty("class", "btn-primary")
         btn_manual_mark.clicked.connect(self.on_manual_checkin_clicked)
         m_lay.addWidget(btn_manual_mark)
@@ -404,9 +418,9 @@ class MainWindow(QMainWindow):
         form_card.setProperty("class", "neumorphic-card")
         f_layout = QVBoxLayout(form_card)
         f_layout.setContentsMargins(20, 20, 20, 20)
-        f_layout.setSpacing(14)
+        f_layout.setSpacing(12)
 
-        title = QLabel("Student Biometric Enrollment")
+        title = QLabel("Student Biometric Registration")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setStyleSheet("color: #38bdf8;")
         f_layout.addWidget(title)
@@ -418,7 +432,7 @@ class MainWindow(QMainWindow):
         desc.setStyleSheet("color: #94a3b8; line-height: 1.4;")
         f_layout.addWidget(desc)
 
-        f_layout.addSpacing(10)
+        f_layout.addSpacing(6)
 
         f_layout.addWidget(QLabel("Cloud Student ID:"))
         self.inp_enroll_id = QLineEdit()
@@ -435,9 +449,21 @@ class MainWindow(QMainWindow):
         self.inp_enroll_name.setPlaceholderText("e.g. Sarah Connor")
         f_layout.addWidget(self.inp_enroll_name)
 
-        f_layout.addSpacing(10)
+        # Quick QoL Prefill & Reset Bar
+        qol_row = QHBoxLayout()
+        btn_prefill = QPushButton("Prefill Test Student")
+        btn_prefill.clicked.connect(self.on_prefill_sample_student_clicked)
+        qol_row.addWidget(btn_prefill)
 
-        self.btn_start_enroll = QPushButton("📸  Start Biometric Capture (5 Samples)")
+        btn_clear = QPushButton("Clear Form")
+        btn_clear.clicked.connect(self.on_clear_enroll_form_clicked)
+        qol_row.addWidget(btn_clear)
+        f_layout.addLayout(qol_row)
+
+        f_layout.addSpacing(6)
+
+        self.btn_start_enroll = QPushButton("  Start Biometric Capture (5 Samples)")
+        self.btn_start_enroll.setIcon(create_vector_icon("user", "#ffffff", 14))
         self.btn_start_enroll.setProperty("class", "btn-success")
         self.btn_start_enroll.clicked.connect(self.on_start_enroll_clicked)
         f_layout.addWidget(self.btn_start_enroll)
@@ -465,19 +491,34 @@ class MainWindow(QMainWindow):
         r_layout.setContentsMargins(20, 20, 20, 20)
         r_layout.setSpacing(12)
 
+        r_header = QHBoxLayout()
         r_title = QLabel("Enrolled Students Directory")
         r_title.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        r_layout.addWidget(r_title)
+        r_header.addWidget(r_title)
+        r_header.addStretch()
 
-        self.table_enrolled = QTableWidget(0, 3)
-        self.table_enrolled.setHorizontalHeaderLabels(["ID", "Roll Number", "Full Name"])
-        self.table_enrolled.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.inp_enrolled_search = QLineEdit()
+        self.inp_enrolled_search.setPlaceholderText("Search enrolled...")
+        self.inp_enrolled_search.setFixedWidth(160)
+        self.inp_enrolled_search.textChanged.connect(self.filter_enrolled_table)
+        r_header.addWidget(self.inp_enrolled_search)
+
+        btn_refresh_enrolled = QPushButton("  Refresh")
+        btn_refresh_enrolled.setIcon(create_vector_icon("refresh", "#e2e8f0", 14))
+        btn_refresh_enrolled.clicked.connect(self.refresh_enrolled_table)
+        r_header.addWidget(btn_refresh_enrolled)
+
+        r_layout.addLayout(r_header)
+
+        # Enrolled Table with Delete Action Column
+        self.table_enrolled = QTableWidget(0, 4)
+        self.table_enrolled.setHorizontalHeaderLabels(["ID", "Roll Number", "Full Name", "Action"])
+        self.table_enrolled.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table_enrolled.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table_enrolled.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table_enrolled.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table_enrolled.verticalHeader().setVisible(False)
         r_layout.addWidget(self.table_enrolled, 1)
-
-        btn_refresh_enrolled = QPushButton("Refresh Directory")
-        btn_refresh_enrolled.clicked.connect(self.refresh_enrolled_table)
-        r_layout.addWidget(btn_refresh_enrolled)
 
         page_layout.addWidget(roster_card, 3)
         return page
@@ -503,12 +544,14 @@ class MainWindow(QMainWindow):
         header_row.addWidget(title)
         header_row.addStretch()
 
-        btn_export = QPushButton("📥 Export to CSV")
+        btn_export = QPushButton("  Export to CSV")
+        btn_export.setIcon(create_vector_icon("download", "#ffffff", 14))
         btn_export.setProperty("class", "btn-primary")
         btn_export.clicked.connect(self.on_export_csv_clicked)
         header_row.addWidget(btn_export)
 
-        btn_refresh = QPushButton("🔄 Refresh")
+        btn_refresh = QPushButton("  Refresh")
+        btn_refresh.setIcon(create_vector_icon("refresh", "#e2e8f0", 14))
         btn_refresh.clicked.connect(self.refresh_records_table)
         header_row.addWidget(btn_refresh)
 
@@ -539,7 +582,7 @@ class MainWindow(QMainWindow):
         c_layout.setContentsMargins(20, 20, 20, 20)
         c_layout.setSpacing(14)
 
-        title = QLabel("Neon Postgres Cloud Synchronization")
+        title = QLabel("Postgres Cloud Synchronization")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setStyleSheet("color: #38bdf8;")
         c_layout.addWidget(title)
@@ -568,7 +611,8 @@ class MainWindow(QMainWindow):
 
         c_layout.addSpacing(10)
 
-        self.btn_sync_now = QPushButton("☁️  Push Queued Attendance to Cloud")
+        self.btn_sync_now = QPushButton("  Push Queued Attendance to Cloud")
+        self.btn_sync_now.setIcon(create_vector_icon("cloud", "#ffffff", 14))
         self.btn_sync_now.setProperty("class", "btn-primary")
         self.btn_sync_now.clicked.connect(self.on_sync_now_clicked)
         c_layout.addWidget(self.btn_sync_now)
@@ -593,7 +637,8 @@ class MainWindow(QMainWindow):
         l_header.addWidget(l_title)
         l_header.addStretch()
 
-        btn_refresh_log = QPushButton("Refresh Logs")
+        btn_refresh_log = QPushButton("  Refresh Log")
+        btn_refresh_log.setIcon(create_vector_icon("refresh", "#e2e8f0", 14))
         btn_refresh_log.clicked.connect(self.refresh_diagnostic_log)
         l_header.addWidget(btn_refresh_log)
 
@@ -633,14 +678,14 @@ class MainWindow(QMainWindow):
             q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
             pix = QPixmap.fromImage(q_img)
             self.video_label.setPixmap(pix.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.lbl_kpi_fps.setText(f"⚡ {fps:.1f} FPS")
+            self.lbl_kpi_fps.setText(f"FPS: {fps:.1f}")
         except Exception:
             pass
 
     @Slot(int, str, str, float)
     def on_attendance_confirmed_event(self, student_id: int, roll_no: str, full_name: str, confidence: float):
         """Visual flash confirmation when a face is confirmed."""
-        self.lbl_confirmed_banner.setText(f"✅ Confirmed: {full_name} ({roll_no}) [{confidence*100:.0f}% similarity]")
+        self.lbl_confirmed_banner.setText(f"Confirmed: {full_name} ({roll_no}) [{confidence*100:.0f}% similarity]")
         self.lbl_confirmed_banner.setStyleSheet("color: #34d399; font-weight: bold; padding: 2px 4px;")
 
         # Subtle glowing emerald flash around camera container
@@ -667,42 +712,51 @@ class MainWindow(QMainWindow):
         conf_val = record.get("confidence", 1.0)
         self.table_present.setItem(row, 3, QTableWidgetItem(f"{conf_val*100:.0f}%"))
 
-        self.lbl_kpi_present.setText(f"👥 Present: {self.table_present.rowCount()}")
+        # QoL: Auto-scroll to latest marked attendee and highlight row
+        self.table_present.scrollToBottom()
+        self.table_present.selectRow(row)
+
+        self.lbl_kpi_present.setText(f"PRESENT: {self.table_present.rowCount()}")
         self.update_sync_badge_count()
 
     @Slot(int, str, str)
     def on_session_started_event(self, local_id: int, course_code: str, course_name: str):
-        self.lbl_active_header.setText(f"🟢 Active Session #{local_id}: {course_code} - {course_name}")
-        self.btn_session_toggle.setText("⏹  End Lecture Session")
+        self.lbl_active_header.setText(f"Active Session #{local_id}: {course_code} - {course_name}")
+        self.btn_session_toggle.setText("  End Lecture Session")
+        self.btn_session_toggle.setIcon(create_vector_icon("stop", "#ffffff", 14))
         self.btn_session_toggle.setProperty("class", "btn-danger")
         self.btn_session_toggle.style().unpolish(self.btn_session_toggle)
         self.btn_session_toggle.style().polish(self.btn_session_toggle)
 
         self.table_present.setRowCount(0)
-        self.lbl_kpi_present.setText("👥 Present: 0")
+        self.lbl_kpi_present.setText("PRESENT: 0")
         self.session_start_time = time.time()
         self.session_timer.start(1000)
 
     @Slot(int)
     def on_session_ended_event(self, local_id: int):
         self.lbl_active_header.setText(f"Session #{local_id} ended. Ready for next class.")
-        self.btn_session_toggle.setText("▶  Start Lecture Session")
+        self.btn_session_toggle.setText("  Start Lecture Session")
+        self.btn_session_toggle.setIcon(create_vector_icon("play", "#ffffff", 14))
         self.btn_session_toggle.setProperty("class", "btn-success")
         self.btn_session_toggle.style().unpolish(self.btn_session_toggle)
         self.btn_session_toggle.style().polish(self.btn_session_toggle)
 
         self.session_timer.stop()
-        self.lbl_session_elapsed.setText("⏱ 00:00:00")
+        self.lbl_session_elapsed.setText("TIME: 00:00:00")
         self.refresh_records_table()
 
     @Slot(str, dict)
     def on_sync_status_changed_event(self, message: str, stats: dict):
         self.lbl_sync_result.setText(message)
-        if stats.get("action") == "ENROLLMENT_COMPLETED":
+        action = stats.get("action")
+        if action == "ENROLLMENT_COMPLETED":
             self.refresh_enrolled_table()
             self.enroll_progress.setValue(5)
             self.lbl_enroll_status.setText("Biometric capture complete!")
-            QMessageBox.information(self, "Biometric Enrollment Success", message)
+            QMessageBox.information(self, "Registration Success", message)
+        elif action == "STUDENT_DELETED":
+            self.refresh_enrolled_table()
         self.update_sync_badge_count()
 
     def update_session_elapsed_time(self):
@@ -711,7 +765,7 @@ class MainWindow(QMainWindow):
             h = elapsed // 3600
             m = (elapsed % 3600) // 60
             s = elapsed % 60
-            self.lbl_session_elapsed.setText(f"⏱ {h:02d}:{m:02d}:{s:02d}")
+            self.lbl_session_elapsed.setText(f"TIME: {h:02d}:{m:02d}:{s:02d}")
 
     # =========================================================================
     # USER ACTIONS & CONTROLLER DELEGATION
@@ -721,14 +775,16 @@ class MainWindow(QMainWindow):
             cam_idx = self.cb_camera_idx.currentIndex()
             self.camera_worker.camera_index = cam_idx
             self.camera_worker.start()
-            self.btn_toggle_cam.setText("Stop Camera Stream")
+            self.btn_toggle_cam.setText("  Stop Camera Stream")
+            self.btn_toggle_cam.setIcon(create_vector_icon("stop", "#ffffff", 14))
             self.btn_toggle_cam.setProperty("class", "btn-danger")
             self.btn_toggle_cam.style().unpolish(self.btn_toggle_cam)
             self.btn_toggle_cam.style().polish(self.btn_toggle_cam)
         else:
             self.camera_worker.stop_worker()
             self.video_label.setText("Camera Stream Stopped.")
-            self.btn_toggle_cam.setText("Start Camera Stream")
+            self.btn_toggle_cam.setText("  Start Camera Stream")
+            self.btn_toggle_cam.setIcon(create_vector_icon("video", "#ffffff", 14))
             self.btn_toggle_cam.setProperty("class", "btn-primary")
             self.btn_toggle_cam.style().unpolish(self.btn_toggle_cam)
             self.btn_toggle_cam.style().polish(self.btn_toggle_cam)
@@ -764,10 +820,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Active Session", "Please start a lecture session first.")
             return
 
-        # Queue manual record in storage
         is_new = self.storage.queue_attendance(
             local_session_id=sid,
-            student_id=9999, # Placeholder manual student id
+            student_id=9999,
             roll_no=roll,
             full_name=name,
             method="manual",
@@ -787,7 +842,7 @@ class MainWindow(QMainWindow):
             self.inp_manual_roll.clear()
             self.inp_manual_name.clear()
         else:
-            QMessageBox.information(self, "Duplicate", f"{roll} is already marked present in this session.")
+            QMessageBox.information(self, "Notice", f"{roll} is already marked present in this session.")
 
     def on_start_enroll_clicked(self):
         try:
@@ -801,13 +856,44 @@ class MainWindow(QMainWindow):
             return
 
         self.enroll_progress.setValue(1)
-        self.lbl_enroll_status.setText("Capturing 5 biometric samples. Look at the camera...")
+        self.lbl_enroll_status.setText("Capturing 5 biometric samples. Face the camera...")
         self.enrollment_controller.request_enrollment(sid, roll, name)
 
         if not self.camera_worker.isRunning():
             self.on_toggle_camera_clicked()
 
         self.switch_page(0)
+
+    def on_prefill_sample_student_clicked(self):
+        """QoL: Automatically populates demo student info for instant testing."""
+        next_id = len(self.storage.list_enrolled_students()) + 1
+        self.inp_enroll_id.setText(str(next_id))
+        self.inp_enroll_roll.setText(f"2024-CS-{next_id:03d}")
+        self.inp_enroll_name.setText(f"Student #{next_id}")
+
+    def on_clear_enroll_form_clicked(self):
+        """QoL: Resets the enrollment form."""
+        self.inp_enroll_id.clear()
+        self.inp_enroll_roll.clear()
+        self.inp_enroll_name.clear()
+        self.enroll_progress.setValue(0)
+        self.lbl_enroll_status.setText("Ready for biometric registration.")
+
+    def on_delete_student_clicked(self, student_id: int, roll_no: str, full_name: str):
+        """QoL: Confirmation and deletion of student biometric enrollment."""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to remove student:\n\n{full_name} ({roll_no})\n\nThis will permanently delete their local face embeddings.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            success = self.enrollment_controller.delete_student(student_id)
+            if success:
+                QMessageBox.information(self, "Student Deleted", f"Removed {full_name} from enrolled biometrics.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete student from local database.")
 
     def on_sync_now_clicked(self):
         url = self.inp_backend_url.text().strip()
@@ -836,9 +922,18 @@ class MainWindow(QMainWindow):
                     (query in (name_item.text().lower() if name_item else ""))
             self.table_present.setRowHidden(row, not match)
 
+    def filter_enrolled_table(self, text: str):
+        query = text.strip().lower()
+        for row in range(self.table_enrolled.rowCount()):
+            roll_item = self.table_enrolled.item(row, 1)
+            name_item = self.table_enrolled.item(row, 2)
+            match = (query in (roll_item.text().lower() if roll_item else "")) or \
+                    (query in (name_item.text().lower() if name_item else ""))
+            self.table_enrolled.setRowHidden(row, not match)
+
     def update_sync_badge_count(self):
         pending = self.storage.get_pending_sync_records()
-        self.lbl_kpi_sync.setText(f"📡 Queue: {len(pending)}")
+        self.lbl_kpi_sync.setText(f"SYNC QUEUE: {len(pending)}")
 
     def refresh_records_table(self):
         records = self.storage.get_pending_sync_records()
@@ -866,6 +961,17 @@ class MainWindow(QMainWindow):
             self.table_enrolled.setItem(row, 0, QTableWidgetItem(str(s["student_id"])))
             self.table_enrolled.setItem(row, 1, QTableWidgetItem(s["roll_no"]))
             self.table_enrolled.setItem(row, 2, QTableWidgetItem(s["full_name"]))
+
+            # Action: Sleek Red Delete Button
+            btn_del = QPushButton("Delete")
+            btn_del.setIcon(create_vector_icon("trash", "#ffffff", 12))
+            btn_del.setProperty("class", "btn-danger")
+            btn_del.setFixedHeight(28)
+            sid = s["student_id"]
+            sroll = s["roll_no"]
+            sname = s["full_name"]
+            btn_del.clicked.connect(lambda ch=False, s_id=sid, r_no=sroll, f_name=sname: self.on_delete_student_clicked(s_id, r_no, f_name))
+            self.table_enrolled.setCellWidget(row, 3, btn_del)
 
     def refresh_diagnostic_log(self):
         log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "desktop.log")

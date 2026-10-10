@@ -24,3 +24,13 @@ class EnrollmentController:
             {"action": "ENROLLMENT_STARTED"}
         )
         return True
+
+    def delete_student(self, student_id: int) -> bool:
+        success = self.storage.delete_enrolled_student(student_id)
+        if success:
+            self.camera_worker.reload_enrolled_embeddings()
+            desktop_event_bus.sync_status_changed.emit(
+                f"Removed student biometrics (ID: #{student_id})",
+                {"action": "STUDENT_DELETED", "student_id": student_id}
+            )
+        return success

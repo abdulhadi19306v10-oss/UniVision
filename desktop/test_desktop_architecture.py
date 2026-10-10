@@ -105,6 +105,42 @@ def test_tracker_multi_face():
     assert len(tracker.confirmed_this_session) == 0
     print("[PASSED] ConsecutiveFrameTracker multi-face tracking PASSED successfully!")
 
+def test_enrollment_and_deletion():
+    print("Testing Student Enrollment and Deletion in LocalStorage...")
+    import numpy as np
+    test_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_del.db")
+    if os.path.exists(test_db):
+        os.remove(test_db)
+    storage = LocalStorage(db_path=test_db)
+
+    # Save a mock student
+    dummy_emb = np.random.rand(128).astype(np.float32)
+    storage.save_enrolled_student(student_id=77, roll_no="2024-CS-077", full_name="John Doe", embedding=dummy_emb)
+
+    students = storage.list_enrolled_students()
+    assert len(students) == 1
+    assert students[0]["student_id"] == 77
+    assert students[0]["full_name"] == "John Doe"
+
+    # Delete the student
+    deleted = storage.delete_enrolled_student(77)
+    assert deleted is True
+
+    # Verify student is removed
+    students_after = storage.list_enrolled_students()
+    assert len(students_after) == 0
+    del storage
+    import gc
+    gc.collect()
+
+    try:
+        if os.path.exists(test_db):
+            os.remove(test_db)
+    except Exception:
+        pass
+    print("[PASSED] Student Enrollment and Deletion PASSED successfully!")
+
 if __name__ == "__main__":
     test_desktop_mvc_eda()
     test_tracker_multi_face()
+    test_enrollment_and_deletion()

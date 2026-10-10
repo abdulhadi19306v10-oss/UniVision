@@ -106,6 +106,16 @@ class LocalStorage:
             cursor.execute("SELECT student_id, roll_no, full_name, enrolled_at FROM enrolled_students ORDER BY roll_no")
             return [dict(row) for row in cursor.fetchall()]
 
+    def delete_enrolled_student(self, student_id: int) -> bool:
+        """
+        Deletes an enrolled student and their biometrics from local database.
+        """
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM enrolled_students WHERE student_id = ?", (student_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
     # --- Session Management ---
     def create_local_session(self, course_id: int, course_code: str, course_name: str, cloud_session_id: Optional[int] = None) -> int:
         now_str = datetime.now(timezone.utc).isoformat()
