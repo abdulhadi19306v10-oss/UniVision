@@ -1,0 +1,76 @@
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List
+from datetime import datetime
+
+# --- Auth Schemas ---
+class StudentLogin(BaseModel):
+    roll_no: str
+    password: str
+
+class TeacherLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    role: str
+    user_id: int
+    full_name: str
+
+# --- Session Schemas ---
+class SessionCreate(BaseModel):
+    course_id: int
+
+class SessionOut(BaseModel):
+    id: int
+    course_id: int
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+# --- Attendance Schemas ---
+class AttendanceRecordItem(BaseModel):
+    student_id: int
+    marked_at: Optional[datetime] = None
+    method: str = "face" # 'face' or 'manual'
+    confidence: Optional[float] = None
+
+class AttendanceBatchUpload(BaseModel):
+    session_id: int
+    records: List[AttendanceRecordItem]
+
+class AttendanceUpdate(BaseModel):
+    method: Optional[str] = None # 'manual'
+    confidence: Optional[float] = None
+
+class AttendanceOut(BaseModel):
+    id: int
+    session_id: int
+    student_id: int
+    marked_at: datetime
+    method: str
+    confidence: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+# --- Student Analytics & Mobile Schemas ---
+class StudentAttendanceItem(BaseModel):
+    attendance_id: int
+    course_code: str
+    course_name: str
+    session_id: int
+    marked_at: datetime
+    method: str
+
+class CourseSummary(BaseModel):
+    course_id: int
+    course_code: str
+    course_name: str
+    total_sessions: int
+    attended_sessions: int
+    attendance_percentage: float
+    is_below_threshold: bool # True if percentage < 75%
