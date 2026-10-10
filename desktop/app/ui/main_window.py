@@ -393,7 +393,7 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # PAGE 1: BIOMETRICS ENROLLMENT
     # =========================================================================
-    def build_enroll_page() -> QWidget:
+    def build_enroll_page(self) -> QWidget:
         page = QWidget()
         page_layout = QHBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -485,7 +485,7 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # PAGE 2: ATTENDANCE LOGS & CORRECTION
     # =========================================================================
-    def build_records_page() -> QWidget:
+    def build_records_page(self) -> QWidget:
         page = QWidget()
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -526,7 +526,7 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # PAGE 3: CLOUD SYNC & DIAGNOSTICS
     # =========================================================================
-    def build_sync_page() -> QWidget:
+    def build_sync_page(self) -> QWidget:
         page = QWidget()
         page_layout = QHBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
