@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -28,8 +28,7 @@ class SessionOut(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Attendance Schemas ---
 class AttendanceRecordItem(BaseModel):
@@ -54,8 +53,7 @@ class AttendanceOut(BaseModel):
     method: str
     confidence: Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Student Analytics & Mobile Schemas ---
 class StudentAttendanceItem(BaseModel):

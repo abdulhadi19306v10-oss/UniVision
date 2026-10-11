@@ -2,11 +2,21 @@ import sys
 import os
 from PySide6.QtCore import QCoreApplication
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ponytail: robust desktop module resolution preventing root test import collision
+desktop_dir = os.path.dirname(os.path.abspath(__file__))
+if desktop_dir not in sys.path:
+    sys.path.insert(0, desktop_dir)
 
-from app.events.event_bus import desktop_event_bus
-from app.storage.local_db import LocalStorage
-from app.controllers.session_controller import SessionController
+try:
+    from desktop.app.events.event_bus import desktop_event_bus
+    from desktop.app.storage.local_db import LocalStorage
+    from desktop.app.controllers.session_controller import SessionController
+    from desktop.app.recognition.tracker import ConsecutiveFrameTracker
+except ImportError:
+    from app.events.event_bus import desktop_event_bus
+    from app.storage.local_db import LocalStorage
+    from app.controllers.session_controller import SessionController
+    from app.recognition.tracker import ConsecutiveFrameTracker
 
 def test_desktop_mvc_eda():
     print("Testing Desktop MVC + Event-Driven Architecture...")
@@ -66,7 +76,6 @@ def test_desktop_mvc_eda():
 
 def test_tracker_multi_face():
     print("Testing ConsecutiveFrameTracker multi-face concurrent tracking...")
-    from app.recognition.tracker import ConsecutiveFrameTracker
     tracker = ConsecutiveFrameTracker(required_consecutive_frames=3, max_idle_decay=2)
 
     # Frame 1: Student 10 and 20 present

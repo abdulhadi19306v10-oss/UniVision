@@ -206,3 +206,36 @@ class LocalStorage:
                     "synced": "YES" if r["synced"] == 1 else "PENDING"
                 })
         return True
+
+    # ponytail: lightweight queries for desktop views and Flutter bridge
+    def list_local_sessions(self) -> List[dict]:
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM local_sessions ORDER BY id DESC")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_attendance(self) -> List[dict]:
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM attendance_queue ORDER BY id DESC")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_attendance(self, queue_id: int, method: Optional[str] = None, confidence: Optional[float] = None) -> bool:
+        updates = []
+        params = []
+        if method is not None:
+            updates.append("method = ?")
+            params.append(method)
+        if confidence is not None:
+            updates.append("confidence = ?")
+            params.append(confidence)
+        if not updates:
+            return False
+        params.append(queue_id)
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE attendance_queue SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+            return cursor.rowcount > 0

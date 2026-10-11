@@ -70,11 +70,11 @@ Add liveness detection (blink check or a lightweight anti-spoof model) so a phot
 
 ## 4. Windows App
 
-**Stack:** Python + PySide6 (Qt), OpenCV, ONNX Runtime, SQLite. Packaged with PyInstaller into a single `.exe`.
+**Stack:** Flutter Desktop (Primary Modern Workstation) / PySide6 (Qt Alternative) + Python, OpenCV, ONNX Runtime, SQLite.
 
 **Screens**
-- **Live session:** camera feed with face boxes, names, running present list
-- **Enrollment:** capture photos and save embeddings
+- **Live session:** camera feed with face boxes, names, running present list, quick session controls
+- **Enrollment:** capture photos, record 5 facial embeddings and save locally
 - **Class setup:** pick class and start/end session
 - **Records:** view, manually correct, export to CSV
 - **Sync status:** shows pending and uploaded records
@@ -189,22 +189,32 @@ CREATE TABLE attendance (
 ```
 focus/
 ├── README / focus.md
-├── desktop/              # Windows app (PySide6)
+├── run_desktop_flutter.bat   # One-click Flutter desktop launcher
+├── run_dektop_flutter.bat    # Alias launcher
+├── run_dektop_flutter.app    # Shell/batch launcher
+├── run_desktop.bat           # PySide6 desktop launcher
+├── desktop_flutter/          # Modern Flutter Desktop Workstation (Native Windows)
+│   ├── lib/                  # Screens (Live HUD, Enroll, Logs, Cloud Sync) & widgets
+│   ├── test/                 # Automated Flutter unit & widget test suite
+│   └── pubspec.yaml
+├── desktop/                  # Python Edge AI & Storage Engine
 │   ├── app/
-│   │   ├── ui/           # screens
-│   │   ├── recognition/  # detector, embedder, matcher, liveness
-│   │   ├── storage/      # local SQLite, sync queue
+│   │   ├── bridge_service.py # REST + WebSocket bridge for Flutter desktop
+│   │   ├── ui/               # PySide6 UI screens
+│   │   ├── recognition/      # detector, embedder, matcher, liveness, tracker
+│   │   ├── storage/          # local SQLite, sync queue
 │   │   └── main.py
-│   ├── models/           # ONNX model files
+│   ├── models/               # ONNX model files
 │   └── requirements.txt
-├── backend/              # FastAPI
+├── backend/                  # FastAPI Cloud API & EDA
 │   ├── app/
 │   │   ├── routers/
+│   │   ├── events/           # EventBus and background handlers
 │   │   ├── models.py
 │   │   ├── schemas.py
 │   │   └── main.py
 │   └── requirements.txt
-└── mobile/               # Flutter app
+└── mobile/                   # Student Mobile App (Flutter)
 ```
 
 ---

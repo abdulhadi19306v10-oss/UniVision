@@ -22,7 +22,7 @@ dist/
 build/
 *.spec
 
-# Flutter / Mobile
+# Flutter / Mobile & Desktop
 mobile/.dart_tool/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
@@ -30,6 +30,14 @@ mobile/.packages
 mobile/build/
 mobile/.pub/
 mobile/.pub-cache/
+
+desktop_flutter/.dart_tool/
+desktop_flutter/.flutter-plugins
+desktop_flutter/.flutter-plugins-dependencies
+desktop_flutter/.packages
+desktop_flutter/build/
+desktop_flutter/.pub/
+desktop_flutter/.pub-cache/
 
 # OS and Editor artifacts
 .DS_Store

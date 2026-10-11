@@ -10,7 +10,7 @@ from app.database import SessionLocal, engine
 from app.models import Base, AuditLog, Session as CourseSession, Student, Attendance
 from datetime import datetime, timezone
 
-async def test_backend_eda():
+async def _run_backend_eda():
     print("Testing Backend Event-Driven Architecture (EDA)...")
     Base.metadata.create_all(bind=engine)
 
@@ -65,5 +65,9 @@ async def test_backend_eda():
     worker.cancel()
     print("[PASSED] Backend EDA test PASSED successfully!")
 
+def test_backend_eda():
+    # ponytail: stdlib asyncio.run keeps pytest completely dependency-free
+    asyncio.run(_run_backend_eda())
+
 if __name__ == "__main__":
-    asyncio.run(test_backend_eda())
+    test_backend_eda()

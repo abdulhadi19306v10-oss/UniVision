@@ -33,63 +33,68 @@ async def handle_batch_attendance(payload: dict):
             if not student_id:
                 continue
 
-            # Idempotency check: see if record already marked
+            # ponytail: get or create attendance record, always publishing AttendanceMarked for audit & notifications
             existing = db.query(Attendance).filter(
                 Attendance.session_id == session_id,
                 Attendance.student_id == student_id
             ).first()
 
             if existing:
+                att_record = existing
+            else:
+                marked_at_raw = rec.get("marked_at")
+                if marked_at_raw:
+                    try:
+                        marked_time = datetime.fromisoformat(marked_at_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        marked_time = datetime.now(timezone.utc)
+                else:
+                    marked_time = datetime.now(timezone.utc)
+
+                new_attendance = Attendance(
+                    session_id=session_id,
+                    student_id=student_id,
+                    marked_at=marked_time,
+                    method=rec.get("method", "face"),
+                    confidence=rec.get("confidence")
+                )
+                db.add(new_attendance)
+                try:
+                    db.commit()
+                    db.refresh(new_attendance)
+                    att_record = new_attendance
+                except IntegrityError:
+                    db.rollback()
+                    att_record = db.query(Attendance).filter(
+                        Attendance.session_id == session_id,
+                        Attendance.student_id == student_id
+                    ).first()
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"[AttendanceHandler] Failed to save attendance for student {student_id}: {e}")
+                    continue
+
+            if not att_record:
                 continue
 
-            marked_at_raw = rec.get("marked_at")
-            if marked_at_raw:
-                try:
-                    marked_time = datetime.fromisoformat(marked_at_raw.replace("Z", "+00:00"))
-                except Exception:
-                    marked_time = datetime.now(timezone.utc)
-            else:
-                marked_time = datetime.now(timezone.utc)
+            # Fetch student info
+            student = db.query(Student).filter(Student.id == student_id).first()
+            roll_no = student.roll_no if student else "N/A"
+            full_name = student.full_name if student else "N/A"
 
-            new_attendance = Attendance(
-                session_id=session_id,
-                student_id=student_id,
-                marked_at=marked_time,
-                method=rec.get("method", "face"),
-                confidence=rec.get("confidence")
-            )
-            db.add(new_attendance)
-
-            try:
-                db.commit()
-                db.refresh(new_attendance)
-
-                # Fetch student info
-                student = db.query(Student).filter(Student.id == student_id).first()
-                roll_no = student.roll_no if student else "N/A"
-                full_name = student.full_name if student else "N/A"
-
-                # Publish domain event for audit logging and mobile notifications
-                await event_bus.publish("AttendanceMarked", {
-                    "attendance_id": new_attendance.id,
-                    "session_id": session_id,
-                    "student_id": student_id,
-                    "roll_no": roll_no,
-                    "full_name": full_name,
-                    "course_code": course_code,
-                    "course_name": course_name,
-                    "marked_at": new_attendance.marked_at.isoformat(),
-                    "method": new_attendance.method,
-                    "confidence": new_attendance.confidence
-                })
-
-            except IntegrityError:
-                db.rollback()
-                logger.info(f"[AttendanceHandler] Duplicate attendance suppressed for student {student_id}")
-            except Exception as e:
-                db.rollback()
-                logger.error(f"[AttendanceHandler] Failed to save attendance for student {student_id}: {e}")
-
+            # Publish domain event for audit logging and mobile notifications
+            await event_bus.publish("AttendanceMarked", {
+                "attendance_id": att_record.id,
+                "session_id": session_id,
+                "student_id": student_id,
+                "roll_no": roll_no,
+                "full_name": full_name,
+                "course_code": course_code,
+                "course_name": course_name,
+                "marked_at": att_record.marked_at.isoformat() if hasattr(att_record.marked_at, "isoformat") else str(att_record.marked_at),
+                "method": att_record.method,
+                "confidence": att_record.confidence
+            })
     finally:
         db.close()
 
