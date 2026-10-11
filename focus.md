@@ -19,19 +19,15 @@ Students are marked present automatically when they enter the classroom. A Windo
 
 ## 2. Architecture
 
-```
-[Camera] -> [Windows app: detect + embed + match (local)]
-                         |
-                         |  attendance records only
-                         v
-                [FastAPI backend] <--> [Neon Postgres]
-                         ^
-                         |  HTTPS + auth
-                         |
-                [Mobile app: students]
+```mermaid
+flowchart LR
+    Cam["Webcam / Camera Feed"] -->|"Raw Video Stream"| Station["Windows Desktop App (Edge)<br/>• YuNet Face Detector (ONNX)<br/>• SFace 128-d Embedder (ONNX)<br/>• Local Cosine Matcher<br/>• Encrypted SQLite Storage"]
+    Station -->|"Attendance Records Only<br/>(student_id, session_id, timestamp)"| API["FastAPI Backend (Cloud)<br/>• JWT Auth & RBAC<br/>• Async EventBus Pipeline"]
+    API <-->|"SQLAlchemy ORM"| DB[("Neon PostgreSQL<br/>Master Database")]
+    API <-->|"HTTPS REST & WebSockets<br/>(Push Alerts)"| Mobile["Mobile App (Students)<br/>(Flutter iOS / Android)"]
 ```
 
-The mobile app and the Windows app never talk to the database directly. Both go through the API, which enforces access rules.
+The mobile app and the Windows app never talk to the database directly. Both go through the API, which enforces access rules. Biometric vectors and facial images never leave the local Windows machine.
 
 ---
 

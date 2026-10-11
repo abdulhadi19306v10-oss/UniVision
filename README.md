@@ -17,62 +17,90 @@
 > **Biometric data never leaves the classroom PC.**  
 > Face images and 128-dimensional embedding vectors are captured, stored, and matched **locally** inside an encrypted SQLite database on the Windows machine. The cloud backend **never** sees or stores biometric embeddings—it only receives minimal attendance records (`student_id`, `session_id`, `timestamp`, `method`, `confidence`).
 
-```
-[Camera] ──> [Windows Station: Detect (YuNet) + Embed (SFace) + Match (Local)]
-                         │
-                         │ (Attendance records ONLY)
-                         ▼
-                 [FastAPI Backend] <───> [Neon Postgres]
-                         ▲
-                         │ (HTTPS + JWT)
-                         │
-                [Mobile App: Students]
+```mermaid
+flowchart LR
+    Cam["Webcam / Camera Feed"] -->|"Raw Video Stream"| Station["Edge Desktop Station (PC)<br/>• YuNet Face Detector (ONNX)<br/>• SFace 128-d Embedder (ONNX)<br/>• Local Cosine Matcher<br/>• Offline SQLite Storage"]
+    Station -->|"Attendance Records Only<br/>(student_id, session_id, timestamp)"| API["Cloud FastAPI Gateway<br/>• JWT Authentication & RBAC<br/>• Async EventBus Pipeline"]
+    API <-->|"SQLAlchemy ORM"| DB[("Neon PostgreSQL<br/>Master Cloud Ledger")]
+    API <-->|"HTTPS REST & WebSockets<br/>(Real-Time Push Alerts)"| Mobile["Student Mobile App<br/>(Flutter iOS / Android)"]
 ```
 
 ---
 
 ## 🏗️ 2. System Architecture: Strict Hybrid (MVC + Event-Driven)
 
-The system strictly adheres to a **Hybrid Architecture** combining **Model-View-Controller (MVC)** with an asynchronous **Event-Driven Architecture (EDA)** across both the Edge Client and Cloud Server.
+The system strictly adheres to a **Hybrid Architecture** combining **Model-View-Controller (MVC)** with an asynchronous **Event-Driven Architecture (EDA)** across both the **Edge Desktop Workstation** and the **Cloud Backend Platform**.
 
 ```mermaid
-graph TD
-    subgraph DesktopApp ["Desktop Workstation (Edge PC) — Hybrid MVC + EDA"]
-        View_Flutter["Flutter Desktop Station / PySide6 GUI"]
-        Bridge_Py["Python AI & Storage Bridge (REST + WS)"]
-        Ctrl_Py["Controllers (Session, Enrollment, Sync)"]
-        Model_Py[("Local SQLite Storage (Embeddings & Queue)")]
-        Bus_Py(("DesktopEventBus (Qt Signals / WebSocket)"))
-        Worker_Py["Camera & AI Worker (Dedicated Thread)"]
+flowchart TD
+    subgraph EdgeStation ["Desktop Workstation (Edge PC) — Hybrid MVC + EDA"]
+        direction TB
+        View_Flutter["Flutter Desktop Station GUI<br/>(Fluent Dark UI / 60 FPS Render)"]
+        View_PySide["PySide6 Alternative GUI<br/>(Qt Signals & Native Windows)"]
+        Bridge_Py["Python AI Bridge Service<br/>(FastAPI REST + WebSocket)"]
 
-        View_Flutter <-->|REST & WebSocket| Bridge_Py
-        Bridge_Py --> Ctrl_Py
-        Ctrl_Py --> Worker_Py
-        Worker_Py -->|Publish: frame_processed| Bus_Py
-        Worker_Py -->|Publish: attendance_confirmed| Bus_Py
-        Bus_Py --> Ctrl_Py
-        Bus_Py --> View_Flutter
-        Ctrl_Py -->|Persist Queue| Model_Py
+        Ctrl_Session["SessionController"]
+        Ctrl_Enroll["EnrollmentController"]
+        Ctrl_Sync["SyncController"]
+
+        Worker_Cam["Camera & AI Worker Thread<br/>(YuNet Detection + SFace Embedder)"]
+        Bus_Desktop["DesktopEventBus<br/>(Qt Signals & WS Pub/Sub)"]
+        Model_Local[("Local SQLite Storage<br/>• Enrolled 128-d Embeddings<br/>• Offline Attendance Queue")]
+
+        View_Flutter -->|"REST Configuration & Actions"| Bridge_Py
+        Bridge_Py -->|"Live Frame Stream & Telemetry (WS)"| View_Flutter
+        Bridge_Py --> Ctrl_Session
+        Bridge_Py --> Ctrl_Enroll
+        Bridge_Py --> Ctrl_Sync
+
+        Ctrl_Session --> Worker_Cam
+        Worker_Cam -->|"Publish: frame_processed"| Bus_Desktop
+        Worker_Cam -->|"Publish: attendance_confirmed"| Bus_Desktop
+
+        Bus_Desktop --> Ctrl_Session
+        Bus_Desktop --> Bridge_Py
+        Bus_Desktop --> View_PySide
+
+        Ctrl_Enroll -->|"Save 128-d Centroid Embeddings"| Model_Local
+        Ctrl_Session -->|"Buffer Offline Attendance Records"| Model_Local
+        Ctrl_Sync -->|"Read Pending Records"| Model_Local
     end
 
-    subgraph CloudBackend ["Cloud Backend API — Hybrid MVC + EDA"]
-        Route_FastAPI["FastAPI Routers (MVC Controllers)"]
-        Model_Cloud[("Neon Postgres (Models)")]
-        Bus_Cloud(("Async EventBus (asyncio.Queue)"))
-        Handler_Att["Attendance Persistence Handler"]
-        Handler_Audit["Audit Log Handler"]
-        Handler_Notify["Notification WebSocket Dispatcher"]
+    subgraph CloudPlatform ["Cloud Backend API — Hybrid MVC + EDA"]
+        direction TB
+        Router_FastAPI["FastAPI Routers (Controllers)<br/>/auth | /sessions | /attendance/batch"]
+        Schema_Pydantic["Pydantic v2 DTOs (Views)<br/>Request Validation & Serialization"]
 
-        Route_FastAPI -->|Publish: BatchAttendanceReceived| Bus_Cloud
-        Bus_Cloud -->|Dispatch| Handler_Att
-        Bus_Cloud -->|Dispatch| Handler_Audit
-        Bus_Cloud -->|Dispatch| Handler_Notify
-        Handler_Att -->|Commit| Model_Cloud
-        Handler_Audit -->|Commit| Model_Cloud
+        Bus_Cloud["AsyncEventBus<br/>(asyncio.Queue Pub/Sub)"]
+
+        Handler_Att["Attendance Handler<br/>(Database Ingestion)"]
+        Handler_Audit["Audit Log Handler<br/>(Security Compliance)"]
+        Handler_Notify["Notification Dispatcher<br/>(WebSocket Push)"]
+
+        Model_Postgres[("Neon PostgreSQL<br/>• Students & Courses<br/>• Master Attendance Ledger<br/>• Immutable Audit Logs")]
+
+        Router_FastAPI --> Schema_Pydantic
+        Router_FastAPI -->|"Publish: BatchAttendanceReceived"| Bus_Cloud
+
+        Bus_Cloud -->|"Dispatch Event"| Handler_Att
+        Bus_Cloud -->|"Dispatch Event"| Handler_Audit
+        Bus_Cloud -->|"Dispatch Event"| Handler_Notify
+
+        Handler_Att -->|"ACID Commit"| Model_Postgres
+        Handler_Audit -->|"Append Log"| Model_Postgres
     end
 
-    Ctrl_Py -->|HTTP POST /attendance/batch| Route_FastAPI
-    Handler_Notify -.->|Real-Time Push Alerts (WS)| MobileApp["Student Mobile App (Flutter)"]
+    subgraph MobileClient ["Student Mobile App (Flutter)"]
+        View_Mobile["Flutter Screens<br/>(Login & Dashboard)"]
+        Service_Mobile["ApiService & WS Client"]
+
+        View_Mobile <--> Service_Mobile
+    end
+
+    %% Cross-Subsystem Interconnections
+    Ctrl_Sync -->|"HTTPS POST /attendance/batch<br/>(Idempotent Offline Sync)"| Router_FastAPI
+    Service_Mobile -->|"HTTPS GET /students/me/attendance<br/>(JWT Authenticated)"| Router_FastAPI
+    Handler_Notify -.->|"WebSocket Real-Time Alert<br/>(Attendance Confirmed)"| Service_Mobile
 ```
 
 | Layer | Model | View | Controller | Event-Driven Mechanism |
@@ -80,6 +108,108 @@ graph TD
 | **Edge Desktop Station** | `LocalStorage` (SQLite) | `desktop_flutter` (Flutter Desktop) / `MainWindow` (PySide6) | `SessionController`, `SyncController`, `EnrollmentController` | `DesktopEventBus` + `CameraWorker` + WebSocket |
 | **Cloud Backend** | SQLAlchemy (`models.py`) | Pydantic DTOs (`schemas.py`) | FastAPI Routers (`routers/`) | `AsyncEventBus` (`asyncio.Queue`) + Handlers |
 | **Mobile Client** | `attendance_model.dart` | Flutter Widgets (`screens/`) | `ApiService` | WebSocket Push Receiver (`/ws/student/{id}`) |
+
+---
+
+### 🏛️ Detailed Architectural Breakdown: How Both Subsystems Work
+
+The system is split into two primary subsystems that operate synergistically while maintaining strict boundaries of privacy and operational independence.
+
+#### 1. Edge Desktop Workstation Subsystem (Local Offline-First AI Engine)
+
+The desktop workstation is designed for local edge execution on the classroom PC. It guarantees zero cloud biometric leakage and functions seamlessly even during network outages.
+
+* **Model Layer (`desktop/app/storage/local_db.py`):**
+  * Powered by a local SQLite database (`desktop_attendance.db`).
+  * Stores student profiles, class rosters, and 128-dimensional biometric embeddings serialized as binary BLOBs.
+  * Implements an offline attendance buffer table with sync state tracking (`sync_status = 'pending' | 'synced'`).
+  * **Privacy Guarantee:** Facial images and embedding vectors are strictly confined to this local file and are **never** transmitted across the network.
+
+* **View Layer (`desktop_flutter/` & `desktop/app/ui/`):**
+  * **Flutter Desktop Workstation (Primary):** Built with Flutter Windows runner, offering a 60 FPS hardware-accelerated interface with fluent neumorphic styling. Features a dynamic Camera HUD with real-time bounding box overlays, 5-sample biometric enrollment wizard, offline attendance ledger, and cloud diagnostics terminal.
+  * **PySide6 Native GUI (Alternative):** A Qt-based desktop UI providing native widgets, camera feeds, and direct Qt Signal slots.
+
+* **Controller Layer (`desktop/app/controllers/`):**
+  * **`SessionController`:** Manages lecture session lifecycles, active student rosters, duplicate-marking guards, and confidence threshold validations.
+  * **`EnrollmentController`:** Drives multi-angle facial sample captures (center, left, right, up, down), calculates normalized centroid embeddings ($\mathbf{v}_{\text{profile}} = \frac{1}{K} \sum_{k=1}^K \mathbf{v}_k$), and persists them into local SQLite.
+  * **`SyncController`:** Monitors internet connectivity, bundles buffered attendance records into atomic batches, sends idempotent sync payloads to the Cloud API, and marks records as `synced` upon HTTP 200 acknowledgment.
+
+* **Event-Driven Architecture (EDA) & Local Bridge (`desktop/app/events/` & `bridge_service.py`):**
+  * **`CameraWorker`:** A dedicated background thread decoupled from the UI. Captures frames at 30 FPS, runs OpenCV **YuNet** face detection, extracts 128-d vectors via **SFace**, computes Cosine Similarity against enrolled students, and evaluates spatial bounding-box variance for anti-spoofing.
+  * **`DesktopEventBus`:** Publishes `frame_processed` and `attendance_confirmed` events to listening controllers.
+  * **`BridgeService`:** An ASGI bridge exposing REST control endpoints and a high-speed WebSocket stream (`/ws/camera`) that transmits annotated JPEG frames and recognition telemetry directly to Flutter Desktop with near-zero latency.
+
+---
+
+#### 2. Cloud Backend Platform Subsystem (Asynchronous Event-Driven Cloud Server)
+
+The cloud backend provides centralized data aggregation, institutional reporting, role-based access control, and real-time push alerting.
+
+* **Model Layer (`backend/app/models.py`):**
+  * Built using SQLAlchemy ORM connected to Neon Serverless PostgreSQL (with fallback to SQLite in development).
+  * Defines entities: `User` (RBAC: Admin, Teacher, Student), `Student`, `Course`, `Session`, `AttendanceRecord` (immutable attendance ledger with composite unique constraints on `[student_id, session_id]`), and `AuditLog` (append-only compliance trail).
+  * **Zero Biometrics:** Schema completely omits face embeddings or biometric matrices.
+
+* **View Layer (`backend/app/schemas.py`):**
+  * Strongly-typed Pydantic v2 schemas providing automatic data validation, RFC 7519 JWT payload definitions, and clean JSON serialization.
+
+* **Controller Layer (`backend/app/routers/`):**
+  * **`auth.py`:** Bcrypt password hashing, OAuth2 password bearer flow, and JWT token issuance and verification.
+  * **`sessions.py`:** Academic course session scheduling, active status tracking, and history queries.
+  * **`attendance.py`:** Handles batch attendance ingestion from edge workstations (`POST /attendance/batch`) and student attendance history lookups.
+  * **`students.py`:** Student self-service profile queries and course attendance percentage calculations.
+
+* **Event-Driven Architecture (EDA) & Asynchronous Handlers (`backend/app/events/`):**
+  * **`AsyncEventBus`:** Powered by Python's `asyncio.Queue` and non-blocking background workers.
+  * When an edge workstation uploads an attendance batch, the controller publishes a `BatchAttendanceReceived` event to the bus and immediately returns HTTP 200/201 in under 10 ms without waiting for database writes.
+  * **Concurrent Handlers:**
+    1. **`AttendanceHandler`:** Asynchronously writes records to PostgreSQL within an ACID transaction, validating enrollment and enforcing uniqueness.
+    2. **`AuditHandler`:** Appends security audit entries with IP address, timestamp, device identifier, matching method (`facial_recognition`), and confidence score.
+    3. **`NotificationHandler`:** Dispatches real-time WebSocket push notifications to connected student mobile applications on `/ws/student/{id}`, notifying students the moment they are marked present.
+
+---
+
+#### 3. End-to-End Operational Workflows
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Student as Student
+    actor Teacher as Teacher
+    participant Cam as Classroom Camera
+    participant Edge as Desktop Workstation (YuNet + SFace)
+    participant LocalDB as SQLite (Local Encrypted)
+    participant Cloud as FastAPI Backend (Async EDA)
+    participant CloudDB as Neon PostgreSQL
+    participant Mobile as Student Mobile App
+
+    Note over Teacher,LocalDB: Phase 1: Biometric Enrollment (Local Only)
+    Teacher->>Edge: Start Enrollment (Roll No, Name)
+    Cam->>Edge: Capture 5 Facial Angles
+    Edge->>Edge: YuNet Detect + SFace Embed (128-d)
+    Edge->>Edge: Compute Centroid Vector
+    Edge->>LocalDB: Store Biometric Profile (Local BLOB)
+
+    Note over Student,Mobile: Phase 2: Live Recognition & Attendance Marking
+    Teacher->>Edge: Start Session (CS-401)
+    Student->>Cam: Walks in front of camera
+    Cam->>Edge: 30 FPS Video Frames
+    Edge->>Edge: Detect Face + Cosine Match (Score >= 0.50)
+    Edge->>Edge: Confirm 3 Consecutive Matching Frames
+    Edge->>LocalDB: Record Marked Present (sync_status = 'pending')
+    Edge-->>Teacher: Live HUD Update (Green Box + Confirmed)
+
+    Note over Edge,Mobile: Phase 3: Offline-First Sync & Real-Time Push Alert
+    Edge->>Cloud: POST /attendance/batch (student_id, session_id, time)
+    Cloud->>Cloud: AsyncEventBus.publish(BatchAttendanceReceived)
+    Cloud-->>Edge: HTTP 200 OK (sync_status = 'synced')
+    par Async Database Commit
+        Cloud->>CloudDB: Insert AttendanceRecord & AuditLog
+    and Async Real-Time Push
+        Cloud-->>Mobile: WebSocket Push Notification ("Marked Present in CS-401")
+        Mobile-->>Student: Display Real-Time Alert & Update Attendance %
+    end
+```
 
 ---
 
