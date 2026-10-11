@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:desktop_flutter/main.dart';
+import 'package:desktop_flutter/services/bridge_client.dart';
 
 void main() {
   testWidgets('UniVision Desktop Station UI renders and navigates seamlessly', (WidgetTester tester) async {
@@ -9,7 +10,12 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const UniVisionDesktopApp());
+    final testClient = BridgeClient(enableBackgroundPolling: false);
+    addTearDown(() {
+      testClient.dispose();
+    });
+
+    await tester.pumpWidget(UniVisionDesktopApp(client: testClient));
     await tester.pump();
 
     // 1. Check Sidebar & Branding
@@ -26,29 +32,23 @@ void main() {
     expect(find.textContaining('FPS:'), findsOneWidget);
     expect(find.textContaining('SYNC QUEUE:'), findsOneWidget);
 
-    // 3. Test Session Start on Live Monitoring page
+    // 3. Test Session Start & End on Live Monitoring page
     expect(find.text('Start Session'), findsOneWidget);
     await tester.tap(find.text('Start Session'));
     await tester.pump();
     expect(find.text('End Session'), findsOneWidget);
 
-    // 4. Test Face Recognition Simulation
-    expect(find.text('Simulate Face Recognition'), findsOneWidget);
-    await tester.tap(find.text('Simulate Face Recognition'));
-    await tester.pump();
-    expect(find.text('Alice Johnson'), findsWidgets);
+    // 4. Test Camera Stream Controls & Manual Override Button
+    expect(find.text('Start Camera Stream'), findsOneWidget);
+    expect(find.text('Manual Override'), findsOneWidget);
 
     // 5. Navigate to Biometrics Enroll
     await tester.tap(find.text('Biometrics Enroll'));
     await tester.pump();
     expect(find.text('Biometric Registration'), findsOneWidget);
     expect(find.text('Enrolled Students Directory'), findsOneWidget);
-    expect(find.text('Prefill Test Student'), findsOneWidget);
-
-    // Prefill test student and verify form
-    await tester.tap(find.text('Prefill Test Student'));
-    await tester.pump();
-    expect(find.text('Diana Prince'), findsOneWidget);
+    expect(find.text('Capture Biometrics via Camera'), findsOneWidget);
+    expect(find.text('Manual Register'), findsOneWidget);
 
     // 6. Navigate to Attendance Logs
     await tester.tap(find.text('Attendance Logs'));
@@ -59,14 +59,18 @@ void main() {
     // 7. Navigate to Cloud & Diagnostics
     await tester.tap(find.text('Cloud & Diagnostics'));
     await tester.pump();
-    expect(find.text('Postgres Cloud Synchronization'), findsOneWidget);
-    expect(find.text('System Activity & Error Logs'), findsOneWidget);
+    expect(find.text('Cloud Database Synchronization'), findsOneWidget);
+    expect(find.text('Live Telemetry & Diagnostics Log'), findsOneWidget);
     expect(find.text('Push Queued Attendance to Cloud'), findsOneWidget);
+    expect(find.text('Test Connection'), findsOneWidget);
 
     // Trigger cloud sync
     await tester.tap(find.text('Push Queued Attendance to Cloud'));
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('Uploaded'), findsOneWidget);
+
+    // Cleanly unmount widget tree before tearDown
+    await tester.pumpWidget(const SizedBox());
   });
 }

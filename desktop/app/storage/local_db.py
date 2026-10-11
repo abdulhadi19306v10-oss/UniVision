@@ -239,3 +239,32 @@ class LocalStorage:
             cursor.execute(f"UPDATE attendance_queue SET {', '.join(updates)} WHERE id = ?", params)
             conn.commit()
             return cursor.rowcount > 0
+
+    def delete_attendance(self, queue_id: int) -> bool:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM attendance_queue WHERE id = ?", (queue_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def export_all_attendance_to_csv(self, target_file_path: str) -> bool:
+        import csv
+        records = self.get_all_attendance()
+        if not records:
+            return False
+        with open(target_file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=["id", "local_session_id", "roll_no", "full_name", "marked_at", "method", "confidence", "synced"])
+            writer.writeheader()
+            for r in records:
+                writer.writerow({
+                    "id": r["id"],
+                    "local_session_id": r["local_session_id"],
+                    "roll_no": r["roll_no"],
+                    "full_name": r["full_name"],
+                    "marked_at": r["marked_at"],
+                    "method": r["method"],
+                    "confidence": f"{r['confidence']:.2f}" if r['confidence'] is not None else "N/A",
+                    "synced": "YES" if r["synced"] == 1 else "PENDING"
+                })
+        return True
+

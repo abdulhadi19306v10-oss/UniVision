@@ -168,3 +168,31 @@ def test_bridge_service_api():
     # 5. End session
     end_res = bridge_client.post("/api/session/end")
     assert end_res.status_code == 200
+
+    # 6. Manual attendance, export, and record deletion
+    s2 = bridge_client.post("/api/session/start", json={
+        "course_id": 102,
+        "course_code": "CS-402",
+        "course_name": "Design Patterns"
+    })
+    assert s2.status_code == 200
+
+    man_res = bridge_client.post("/api/records/manual", json={
+        "student_id": 888,
+        "roll_no": "2024-TEST-888",
+        "full_name": "Manual Student"
+    })
+    assert man_res.status_code == 200
+    recs = bridge_client.get("/api/records").json()
+    assert any(r["student_id"] == 888 for r in recs)
+
+    exp_res = bridge_client.post("/api/records/export")
+    assert exp_res.status_code == 200
+    assert "file_path" in exp_res.json()
+
+    rec_id = next(r["id"] for r in recs if r["student_id"] == 888)
+    del_rec = bridge_client.delete(f"/api/records/{rec_id}")
+    assert del_rec.status_code == 200
+
+    bridge_client.post("/api/session/end")
+

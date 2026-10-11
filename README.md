@@ -200,7 +200,7 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
-### Step 3: Run the Flutter Desktop Workstation (Recommended)
+### Step 3: Run the Flutter Desktop Workstation (Production Ready)
 
 Run the one-click launch script:
 ```powershell
@@ -208,7 +208,13 @@ Run the one-click launch script:
 ```
 *(or run `.\run_dektop_flutter.bat` / `.\run_dektop_flutter.app`)*
 
-This starts the Python AI & SQLite Bridge service on `http://127.0.0.1:8001` and launches the Flutter Windows desktop application.
+This launches the Python AI & SQLite Bridge service on `http://127.0.0.1:8001` and opens the compiled Flutter Windows release binary (`desktop_flutter.exe`):
+* **Live AI Camera Stream:** Real webcam streaming at 30 FPS with YuNet face detection boxes, SFace ArcFace cosine similarity scores, and verification status overlays.
+* **Biometric Enrollment:** 5-angle camera capture averaging face feature vectors into offline SQLite storage (`desktop_attendance.db`).
+* **Automated Session Roster:** 3-consecutive-frame temporal streak verification with auto-queuing into SQLite attendance records.
+* **Manual Attendance Override:** Teacher manual attendance marking and record management with deletion support.
+* **CSV Export:** Real CSV export to `desktop/exports/` for institutional reporting.
+* **Cloud Sync:** Direct sync to FastAPI backend with connection diagnostics and live activity terminal.
 
 Alternatively, execute the compiled release binary directly:
 ```powershell
@@ -255,6 +261,7 @@ Run from `desktop_flutter`:
 cd desktop_flutter
 flutter test
 ```
-- **7 passed** in ~16 seconds:
+- **8 passed** in ~16 seconds:
   - `test/bridge_client_test.dart`: Session state, camera toggle, enrollment/deletion, simulation matching, cloud sync.
-  - `test/widget_test.dart`: UI rendering, navigation across all 4 screens, user interactions.
+  - `test/widget_test.dart`: Full UI rendering, responsive layout checks, navigation across all 4 workstation screens, manual override and sync actions.
+

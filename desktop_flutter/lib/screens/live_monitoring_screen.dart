@@ -2,8 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../theme.dart';
 import '../services/bridge_client.dart';
+import '../widgets/camera_stream_view.dart';
 
-// ponytail: live monitoring screen combining session control, camera HUD, and live roster
+// ponytail: production live biometric monitoring screen with real video rendering and live roster
 class LiveMonitoringScreen extends StatefulWidget {
   final BridgeClient client;
 
@@ -20,7 +21,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
 
   Timer? _sessionTimer;
   int _elapsedSeconds = 0;
-  String _selectedCamera = 'Camera 0 (Default)';
+  int _selectedCameraIndex = 0;
 
   @override
   void initState() {
@@ -51,15 +52,97 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
     return '$h:$m:$s';
   }
 
+  void _showManualMarkDialog() {
+    final enrolled = widget.client.enrolledStudents;
+    Map<String, dynamic>? selectedStudent = enrolled.isNotEmpty ? enrolled.first : null;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: AppTheme.surfaceElevated,
+          title: const Row(
+            children: [
+              Icon(Icons.edit_note_rounded, color: AppTheme.primary),
+              SizedBox(width: 8),
+              Text('Manual Attendance Override', style: TextStyle(fontSize: 16)),
+            ],
+          ),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Select an enrolled student to manually mark present in this session:',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                if (enrolled.isEmpty)
+                  const Text('No enrolled students found. Please register students first.',
+                      style: TextStyle(color: AppTheme.warning, fontSize: 13))
+                else
+                  DropdownButtonFormField<Map<String, dynamic>>(
+                    value: selectedStudent,
+                    dropdownColor: AppTheme.surfaceElevated,
+                    decoration: const InputDecoration(labelText: 'Student'),
+                    items: enrolled.map((s) {
+                      return DropdownMenuItem(
+                        value: s,
+                        child: Text('${s['full_name']} (${s['roll_no']})', overflow: TextOverflow.ellipsis),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) setDialogState(() => selectedStudent = val);
+                    },
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: selectedStudent == null
+                  ? null
+                  : () async {
+                      Navigator.pop(ctx);
+                      final success = await widget.client.manualMarkAttendance(
+                        studentId: selectedStudent!['student_id'],
+                        rollNo: selectedStudent!['roll_no'],
+                        name: selectedStudent!['full_name'],
+                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(success
+                                ? 'Marked ${selectedStudent!['full_name']} present!'
+                                : 'Failed to record manual attendance. Make sure a session is active.'),
+                          ),
+                        );
+                      }
+                    },
+              child: const Text('Confirm Attendance'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final activeSession = widget.client.status['active_session'];
     final bool hasActiveSession = activeSession != null && activeSession['local_id'] != null;
     final bool isCameraRunning = widget.client.status['camera']?['running'] ?? false;
+    final double fps = (widget.client.status['camera']?['fps'] ?? 0.0).toDouble();
 
     return Column(
       children: [
-        // 1. Quick Session Bar
+        // 1. Session Control Bar
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
@@ -71,7 +154,8 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                const Text('Course Code:', style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold, fontSize: 13)),
+                const Text('Course Code:',
+                    style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold, fontSize: 13)),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 90,
@@ -82,7 +166,8 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                   ),
                 ),
                 const SizedBox(width: 14),
-                const Text('Name:', style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold, fontSize: 13)),
+                const Text('Name:',
+                    style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold, fontSize: 13)),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 180,
@@ -92,56 +177,60 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                     decoration: const InputDecoration(hintText: 'Course Name', isDense: true),
                   ),
                 ),
-              const SizedBox(width: 14),
-              SizedBox(
-                width: 60,
-                child: TextField(
-                  controller: _idCtrl,
-                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-                  decoration: const InputDecoration(hintText: 'ID', isDense: true),
+                const SizedBox(width: 14),
+                SizedBox(
+                  width: 60,
+                  child: TextField(
+                    controller: _idCtrl,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    decoration: const InputDecoration(hintText: 'ID', isDense: true),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 14),
-              ElevatedButton.icon(
-                onPressed: () {
-                  if (hasActiveSession) {
-                    widget.client.endSession();
-                  } else {
-                    final int courseId = int.tryParse(_idCtrl.text.trim()) ?? 101;
-                    widget.client.startSession(courseId: courseId, code: _codeCtrl.text.trim(), name: _nameCtrl.text.trim());
-                  }
-                },
-                icon: Icon(hasActiveSession ? Icons.stop_rounded : Icons.play_arrow_rounded, size: 16),
-                label: Text(hasActiveSession ? 'End Session' : 'Start Session'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: hasActiveSession ? AppTheme.error : AppTheme.success,
+                const SizedBox(width: 14),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    if (hasActiveSession) {
+                      widget.client.endSession();
+                    } else {
+                      final int courseId = int.tryParse(_idCtrl.text.trim()) ?? 101;
+                      widget.client.startSession(
+                        courseId: courseId,
+                        code: _codeCtrl.text.trim(),
+                        name: _nameCtrl.text.trim(),
+                      );
+                    }
+                  },
+                  icon: Icon(hasActiveSession ? Icons.stop_rounded : Icons.play_arrow_rounded, size: 16),
+                  label: Text(hasActiveSession ? 'End Session' : 'Start Session'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: hasActiveSession ? AppTheme.error : AppTheme.success,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 14),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceSunken,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.border),
+                const SizedBox(width: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceSunken,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Text(
+                    'SESSION DURATION: ${_formatElapsedTime(_elapsedSeconds)}',
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
                 ),
-                child: Text(
-                  'TIME: ${_formatElapsedTime(_elapsedSeconds)}',
-                  style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
         const SizedBox(height: 16),
 
-        // 2. Main Body Split: Video HUD (Left) vs Recognized Roster (Right)
+        // 2. Main Body Split: Video Viewport (Left) vs Live Roster (Right)
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // LEFT: Video HUD Stream Viewport
+              // LEFT: Live Video Feed & Controls
               Expanded(
                 flex: 6,
                 child: Container(
@@ -155,151 +244,62 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                     children: [
                       // Video Stream Viewport
                       Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: AppTheme.surfaceSunken,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: AppTheme.border),
-                          ),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              if (isCameraRunning)
-                                Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(24),
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          border: Border.all(color: AppTheme.success.withValues(alpha: 0.5), width: 2),
-                                        ),
-                                        child: const Icon(Icons.face_rounded, size: 64, color: AppTheme.success),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      const Text(
-                                        'AI Biometric Tracking Active',
-                                        style: TextStyle(color: AppTheme.success, fontWeight: FontWeight.bold, fontSize: 15),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      const Text(
-                                        'YuNet Face Detection & SFace ArcFace Cosine Matcher',
-                                        style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                )
-                              else
-                                const Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.videocam_off_rounded, size: 48, color: AppTheme.textMuted),
-                                      SizedBox(height: 12),
-                                      Text(
-                                        'Camera is inactive.\nClick \'Start Camera Stream\' below to begin AI recognition.',
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(color: AppTheme.textMuted, fontSize: 13, height: 1.4),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-
-                              // Live stream corner overlay
-                              Positioned(
-                                top: 12,
-                                left: 12,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.6),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Container(
-                                        width: 8,
-                                        height: 8,
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: isCameraRunning ? AppTheme.success : AppTheme.error,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        isCameraRunning ? 'LIVE STREAM' : 'OFFLINE',
-                                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                        child: CameraStreamView(
+                          streamUrl: '${widget.client.baseUrl}/api/camera/stream',
+                          isRunning: isCameraRunning,
+                          currentFps: fps,
                         ),
                       ),
                       const SizedBox(height: 12),
 
-                      // Status message
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          isCameraRunning
-                              ? 'Biometrics Engine Active • Tracking faces in classroom...'
-                              : 'Biometrics Engine Ready • Waiting for camera stream...',
-                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontStyle: FontStyle.italic),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Camera Control Bar
+                      // Status Bar & Controls
                       SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           children: [
                             ElevatedButton.icon(
-                              onPressed: () => widget.client.toggleCamera(),
+                              onPressed: () => widget.client.toggleCamera(cameraIndex: _selectedCameraIndex),
                               icon: Icon(isCameraRunning ? Icons.videocam_off : Icons.videocam, size: 16),
-                              label: Text(isCameraRunning ? 'Stop Camera Stream' : 'Start Camera Stream'),
+                              label: Text(isCameraRunning ? 'Stop Camera' : 'Start Camera Stream'),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: isCameraRunning ? AppTheme.error : AppTheme.primary,
                               ),
                             ),
                             const SizedBox(width: 8),
                             OutlinedButton.icon(
-                              onPressed: () {
-                                widget.client.simulateAttendanceMatch('2024-CS-001', 'Alice Johnson', 0.94);
-                              },
-                              icon: const Icon(Icons.bolt_rounded, size: 16, color: AppTheme.warning),
-                              label: const Text('Simulate Face Recognition', style: TextStyle(fontSize: 12)),
+                              onPressed: hasActiveSession ? _showManualMarkDialog : null,
+                              icon: const Icon(Icons.how_to_reg_rounded, size: 16, color: AppTheme.primary),
+                              label: const Text('Manual Override', style: TextStyle(fontSize: 12)),
                             ),
                             const SizedBox(width: 14),
                             const Text('Device:', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
                             const SizedBox(width: 8),
-                            DropdownButton<String>(
-                              value: _selectedCamera,
+                            DropdownButton<int>(
+                              value: _selectedCameraIndex,
                               dropdownColor: AppTheme.surfaceElevated,
                               style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
                               underline: const SizedBox(),
-                              items: ['Camera 0 (Default)', 'Camera 1 (External)'].map((e) {
-                                return DropdownMenuItem(value: e, child: Text(e));
-                              }).toList(),
-                              onChanged: (val) {
-                                if (val != null) setState(() => _selectedCamera = val);
-                              },
+                              items: const [
+                                DropdownMenuItem(value: 0, child: Text('Device 0 (Integrated / USB)')),
+                                DropdownMenuItem(value: 1, child: Text('Device 1 (External / Secondary)')),
+                              ],
+                              onChanged: isCameraRunning
+                                  ? null
+                                  : (val) {
+                                      if (val != null) setState(() => _selectedCameraIndex = val);
+                                    },
                             ),
                           ],
                         ),
                       ),
+
                     ],
                   ),
                 ),
               ),
               const SizedBox(width: 16),
 
-              // RIGHT: Live Attendance Roster
+              // RIGHT: Live Recognized Attendance Roster
               Expanded(
                 flex: 4,
                 child: Container(
@@ -314,29 +314,44 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                     children: [
                       Row(
                         children: [
-                          const Icon(Icons.how_to_reg_rounded, size: 18, color: AppTheme.primary),
+                          const Icon(Icons.verified_user_rounded, size: 18, color: AppTheme.primary),
                           const SizedBox(width: 8),
                           const Text(
-                            'Recognized Roster',
+                            'Session Roster',
                             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: AppTheme.textPrimary),
                           ),
                           const Spacer(),
-                          TextButton(
-                            onPressed: () {
-                              setState(() => widget.client.liveRoster.clear());
-                            },
-                            child: const Text('Clear', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: AppTheme.primary.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '${widget.client.liveRoster.length} Present',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.primary),
+                            ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
+
                       Expanded(
                         child: widget.client.liveRoster.isEmpty
-                            ? const Center(
-                                child: Text(
-                                  'No students recognized yet.\nStart camera stream to begin matching.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                            ? Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.people_alt_outlined, size: 36, color: AppTheme.textMuted),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      isCameraRunning
+                                          ? 'Scanning classroom feed...\nFaces will be verified and queued here.'
+                                          : 'Start camera stream to begin automated facial recognition.',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, height: 1.4),
+                                    ),
+                                  ],
                                 ),
                               )
                             : ListView.separated(
@@ -344,7 +359,7 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                                 separatorBuilder: (_, __) => const Divider(color: AppTheme.border, height: 1),
                                 itemBuilder: (context, i) {
                                   final r = widget.client.liveRoster[i];
-                                  final double conf = (r['confidence'] ?? 0.9).toDouble();
+                                  final double conf = (r['confidence'] ?? 0.95).toDouble();
                                   return ListTile(
                                     dense: true,
                                     contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -355,7 +370,8 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                                     ),
                                     title: Text(
                                       r['full_name'] ?? '',
-                                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppTheme.textPrimary),
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600, fontSize: 13, color: AppTheme.textPrimary),
                                     ),
                                     subtitle: Text(
                                       '${r['roll_no']} • ${r['time']}',
@@ -370,7 +386,8 @@ class _LiveMonitoringScreenState extends State<LiveMonitoringScreen> {
                                       ),
                                       child: Text(
                                         '${(conf * 100).toInt()}%',
-                                        style: const TextStyle(color: AppTheme.success, fontSize: 11, fontWeight: FontWeight.bold),
+                                        style: const TextStyle(
+                                            color: AppTheme.success, fontSize: 11, fontWeight: FontWeight.bold),
                                       ),
                                     ),
                                   );

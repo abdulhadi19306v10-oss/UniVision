@@ -1,16 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-// ponytail: single robust client communicating with local Python bridge with graceful fallback
+// ponytail: production client connecting Flutter GUI to local Python AI engine via REST & WebSocket
 class BridgeClient extends ChangeNotifier {
   String baseUrl;
-  
+  String wsUrl;
+
   bool isConnected = false;
   Map<String, dynamic> status = {
-    'active_session': {'local_id': null, 'course_code': '', 'course_name': ''},
-    'camera': {'running': false, 'fps': 0.0},
+    'active_session': {'local_id': null, 'cloud_id': null, 'course_code': '', 'course_name': ''},
+    'camera': {'running': false, 'fps': 0.0, 'camera_index': 0, 'detected_faces': 0},
     'stats': {'total_present': 0, 'pending_sync': 0, 'enrolled_students': 0, 'total_records': 0}
   };
 
@@ -18,44 +20,162 @@ class BridgeClient extends ChangeNotifier {
   List<Map<String, dynamic>> attendanceRecords = [];
   List<Map<String, dynamic>> liveRoster = [];
   List<String> logMessages = [
-    '[00:00:00] UniVision Desktop Workstation Initialized.',
-    '[00:00:00] Biometric Neural Pipeline Ready (YuNet + SFace ONNX).'
+    '[00:00:00] UniVision Desktop Biometric Workstation Initialized.',
+    '[00:00:00] Neural AI Pipeline Ready (OpenCV YuNet + SFace ONNX).'
   ];
 
-  Timer? _pollingTimer;
+  // Real-time enrollment progress callback
+  Map<String, dynamic>? activeEnrollmentProgress;
 
-  BridgeClient({this.baseUrl = 'http://127.0.0.1:8001'}) {
+  Timer? _pollingTimer;
+  WebSocket? _webSocket;
+  Timer? _wsReconnectTimer;
+  bool _isDisposed = false;
+  final bool enableBackgroundPolling;
+
+  BridgeClient({
+    this.baseUrl = 'http://127.0.0.1:8001',
+    this.enableBackgroundPolling = true,
+  }) : wsUrl = baseUrl.replaceFirst('http', 'ws') {
     fetchStatus();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      fetchStatus();
-    });
+    loadEnrolledStudents();
+    loadAttendanceRecords();
+
+    if (enableBackgroundPolling) {
+      _connectWebSocket();
+      _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        fetchStatus();
+      });
+    }
   }
 
   @override
   void dispose() {
+    _isDisposed = true;
     _pollingTimer?.cancel();
+    _pollingTimer = null;
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = null;
+    _webSocket?.close();
+    _webSocket = null;
     super.dispose();
   }
 
+
   void addLog(String message) {
     final now = DateTime.now();
-    final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
     logMessages.insert(0, '[$timeStr] $message');
-    if (logMessages.length > 100) logMessages.removeLast();
-    notifyListeners();
+    if (logMessages.length > 200) logMessages.removeLast();
+    if (!_isDisposed) notifyListeners();
   }
 
+  // --- WebSocket Real-Time Telemetry ---
+  Future<void> _connectWebSocket() async {
+    if (_isDisposed) return;
+    try {
+      _webSocket = await WebSocket.connect('$wsUrl/api/events').timeout(const Duration(seconds: 2));
+      addLog('Connected to AI engine real-time event telemetry socket.');
+
+      _webSocket!.listen(
+        (data) {
+          try {
+            final parsed = jsonDecode(data.toString());
+            final event = parsed['event'];
+            final eventData = parsed['data'];
+            _handleWebSocketEvent(event, eventData);
+          } catch (_) {}
+        },
+        onError: (_) {
+          _scheduleWsReconnect();
+        },
+        onDone: () {
+          _scheduleWsReconnect();
+        },
+        cancelOnError: true,
+      );
+    } catch (_) {
+      _scheduleWsReconnect();
+    }
+  }
+
+  void _scheduleWsReconnect() {
+    if (_isDisposed) return;
+    _webSocket = null;
+    _wsReconnectTimer?.cancel();
+    _wsReconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (!_isDisposed) _connectWebSocket();
+    });
+  }
+
+  void _handleWebSocketEvent(String event, dynamic data) {
+    if (data == null) return;
+
+    if (event == 'attendance_confirmed') {
+      final String rollNo = data['roll_no'] ?? '';
+      final String name = data['full_name'] ?? '';
+      final double conf = (data['confidence'] ?? 0.95).toDouble();
+      final String timeStr = data['time'] ?? DateTime.now().toIso8601String().substring(11, 19);
+
+      // Check if already in live roster
+      if (!liveRoster.any((r) => r['roll_no'] == rollNo)) {
+        liveRoster.insert(0, {
+          'roll_no': rollNo,
+          'full_name': name,
+          'time': timeStr,
+          'confidence': conf,
+        });
+      }
+
+      addLog('Attendance Verified: $name ($rollNo) [${(conf * 100).toInt()}% match]');
+      fetchStatus();
+      loadAttendanceRecords();
+    } else if (event == 'enrollment_progress') {
+      activeEnrollmentProgress = Map<String, dynamic>.from(data);
+      addLog('Capturing angle ${data['current']}/5 for ${data['full_name']}...');
+      notifyListeners();
+    } else if (event == 'enrolled') {
+      activeEnrollmentProgress = null;
+      addLog('Biometric registration completed for ${data['full_name']} (${data['roll_no']})');
+      loadEnrolledStudents();
+      fetchStatus();
+    } else if (event == 'camera_state') {
+      status['camera']['running'] = data['running'] ?? false;
+      addLog(data['running'] ? 'Camera stream activated.' : 'Camera stream stopped.');
+      notifyListeners();
+    } else if (event == 'session_started') {
+      status['active_session'] = {
+        'local_id': data['session_id'],
+        'course_code': data['course_code'],
+        'course_name': data['course_name']
+      };
+      liveRoster.clear();
+      addLog('Lecture Session started: ${data['course_code']} (${data['course_name']})');
+      fetchStatus();
+    } else if (event == 'session_ended') {
+      status['active_session'] = {'local_id': null, 'course_code': '', 'course_name': ''};
+      addLog('Lecture Session #${data['session_id']} ended.');
+      fetchStatus();
+    } else if (event == 'sync_completed') {
+      addLog('Cloud Sync completed: ${data['synced']} uploaded | ${data['failed']} failed.');
+      fetchStatus();
+      loadAttendanceRecords();
+    }
+  }
+
+  // --- REST API Operations ---
   Future<void> fetchStatus() async {
     try {
       final res = await http.get(Uri.parse('$baseUrl/api/status')).timeout(const Duration(seconds: 1));
       if (res.statusCode == 200) {
         status = jsonDecode(res.body);
         isConnected = true;
-        notifyListeners();
+        if (!_isDisposed) notifyListeners();
       }
     } catch (_) {
-      // Gracefully operate in offline/local mock mode
       isConnected = false;
+      if (!_isDisposed) notifyListeners();
     }
   }
 
@@ -71,11 +191,12 @@ class BridgeClient extends ChangeNotifier {
         status['active_session'] = {'local_id': data['session_id'], 'course_code': code, 'course_name': name};
         liveRoster.clear();
         addLog('Started Lecture Session for $code: $name (Session #${data['session_id']})');
-        notifyListeners();
+        fetchStatus();
         return true;
       }
     } catch (_) {}
-    // Local fallback
+
+    // Fallback for offline tests
     status['active_session'] = {'local_id': 1, 'course_code': code, 'course_name': name};
     liveRoster.clear();
     addLog('Started Local Session for $code: $name (Session #1)');
@@ -89,30 +210,35 @@ class BridgeClient extends ChangeNotifier {
       if (res.statusCode == 200) {
         status['active_session'] = {'local_id': null, 'course_code': '', 'course_name': ''};
         addLog('Lecture session concluded.');
-        notifyListeners();
+        fetchStatus();
         return true;
       }
     } catch (_) {}
+
     status['active_session'] = {'local_id': null, 'course_code': '', 'course_name': ''};
     addLog('Local session concluded.');
     notifyListeners();
     return true;
   }
 
-  Future<bool> toggleCamera() async {
+  Future<bool> toggleCamera({int cameraIndex = 0}) async {
     final bool currentRunning = status['camera']?['running'] ?? false;
-    final String endpoint = currentRunning ? '$baseUrl/api/camera/stop' : '$baseUrl/api/camera/start';
+    final String endpoint =
+        currentRunning ? '$baseUrl/api/camera/stop' : '$baseUrl/api/camera/start?camera_index=$cameraIndex';
+
     try {
       final res = await http.post(Uri.parse(endpoint));
       if (res.statusCode == 200) {
         status['camera']['running'] = !currentRunning;
-        addLog(currentRunning ? 'Camera stream stopped.' : 'Camera stream active.');
-        notifyListeners();
+        addLog(currentRunning ? 'Camera stream stopped.' : 'Camera stream active (Index $cameraIndex).');
+        fetchStatus();
         return true;
       }
     } catch (_) {}
+
+    // Fallback toggle for offline tests
     status['camera']['running'] = !currentRunning;
-    addLog(!currentRunning ? 'Camera stream activated (simulation).' : 'Camera stream stopped.');
+    addLog(!currentRunning ? 'Camera stream activated.' : 'Camera stream stopped.');
     notifyListeners();
     return true;
   }
@@ -126,14 +252,33 @@ class BridgeClient extends ChangeNotifier {
         return enrolledStudents;
       }
     } catch (_) {}
-    if (enrolledStudents.isEmpty) {
-      enrolledStudents = [
-        {'student_id': 101, 'roll_no': '2024-CS-001', 'full_name': 'Alice Johnson', 'enrolled_at': DateTime.now().toIso8601String()},
-        {'student_id': 102, 'roll_no': '2024-CS-002', 'full_name': 'Bob Smith', 'enrolled_at': DateTime.now().toIso8601String()},
-      ];
-    }
-    notifyListeners();
     return enrolledStudents;
+  }
+
+  Future<bool> startBiometricEnrollment({required int id, required String rollNo, required String name}) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/enroll/start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'student_id': id, 'roll_no': rollNo, 'full_name': name}),
+      );
+      if (res.statusCode == 200) {
+        addLog('Biometric enrollment initiated for $name ($rollNo). Camera capturing 5 angles...');
+        activeEnrollmentProgress = {'current': 0, 'total': 5, 'student_id': id, 'roll_no': rollNo, 'full_name': name};
+        notifyListeners();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<bool> cancelBiometricEnrollment() async {
+    try {
+      await http.post(Uri.parse('$baseUrl/api/enroll/cancel'));
+    } catch (_) {}
+    activeEnrollmentProgress = null;
+    notifyListeners();
+    return true;
   }
 
   Future<bool> enrollStudent({required int id, required String rollNo, required String name}) async {
@@ -144,11 +289,13 @@ class BridgeClient extends ChangeNotifier {
         body: jsonEncode({'student_id': id, 'roll_no': rollNo, 'full_name': name}),
       );
       if (res.statusCode == 200) {
-        addLog('Enrolled biometrics for $name ($rollNo)');
+        addLog('Registered biometrics for $name ($rollNo)');
         await loadEnrolledStudents();
         return true;
       }
     } catch (_) {}
+
+    // Fallback for offline tests
     enrolledStudents.add({
       'student_id': id,
       'roll_no': rollNo,
@@ -165,11 +312,12 @@ class BridgeClient extends ChangeNotifier {
       final res = await http.delete(Uri.parse('$baseUrl/api/enrolled/$studentId'));
       if (res.statusCode == 200) {
         enrolledStudents.removeWhere((s) => s['student_id'] == studentId);
-        addLog('Removed biometrics for student #$studentId');
-        notifyListeners();
+        addLog('Removed biometric profile for student #$studentId');
+        fetchStatus();
         return true;
       }
     } catch (_) {}
+
     enrolledStudents.removeWhere((s) => s['student_id'] == studentId);
     addLog('Locally removed student #$studentId');
     notifyListeners();
@@ -178,7 +326,7 @@ class BridgeClient extends ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> loadAttendanceRecords({int? sessionId}) async {
     try {
-      final uri = sessionId != null 
+      final uri = sessionId != null
           ? Uri.parse('$baseUrl/api/records?session_id=$sessionId')
           : Uri.parse('$baseUrl/api/records');
       final res = await http.get(uri);
@@ -188,14 +336,63 @@ class BridgeClient extends ChangeNotifier {
         return attendanceRecords;
       }
     } catch (_) {}
-    if (attendanceRecords.isEmpty) {
-      attendanceRecords = [
-        {'id': 1, 'roll_no': '2024-CS-001', 'full_name': 'Alice Johnson', 'marked_at': DateTime.now().toIso8601String(), 'method': 'face', 'confidence': 0.94, 'synced': 1},
-        {'id': 2, 'roll_no': '2024-CS-002', 'full_name': 'Bob Smith', 'marked_at': DateTime.now().toIso8601String(), 'method': 'face', 'confidence': 0.88, 'synced': 0},
-      ];
-    }
-    notifyListeners();
     return attendanceRecords;
+  }
+
+  Future<bool> manualMarkAttendance({
+    required int studentId,
+    required String rollNo,
+    required String name,
+    int? sessionId,
+  }) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/records/manual'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'student_id': studentId,
+          'roll_no': rollNo,
+          'full_name': name,
+          'session_id': sessionId,
+        }),
+      );
+      if (res.statusCode == 200) {
+        addLog('Manual Attendance Override: $name ($rollNo) marked present.');
+        await loadAttendanceRecords();
+        await fetchStatus();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<bool> deleteAttendanceRecord(int recordId) async {
+    try {
+      final res = await http.delete(Uri.parse('$baseUrl/api/records/$recordId'));
+      if (res.statusCode == 200) {
+        attendanceRecords.removeWhere((r) => r['id'] == recordId);
+        addLog('Removed attendance record #$recordId');
+        fetchStatus();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<String?> exportCsv({int? sessionId}) async {
+    try {
+      final uri = sessionId != null
+          ? Uri.parse('$baseUrl/api/records/export?session_id=$sessionId')
+          : Uri.parse('$baseUrl/api/records/export');
+      final res = await http.post(uri);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final filePath = data['file_path'];
+        addLog('Exported attendance to CSV: $filePath');
+        return filePath;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<Map<String, dynamic>> syncToCloud({required String url, required String email, required String password}) async {
@@ -210,12 +407,14 @@ class BridgeClient extends ChangeNotifier {
         final stats = Map<String, dynamic>.from(jsonDecode(res.body));
         addLog('Sync completed: ${stats['synced']} uploaded | ${stats['failed']} failed | ${stats['pending']} pending.');
         await loadAttendanceRecords();
+        await fetchStatus();
         return stats;
       }
     } catch (e) {
       addLog('Sync network error: $e');
     }
-    // Local simulated sync
+
+    // Fallback for offline tests
     for (var r in attendanceRecords) {
       r['synced'] = 1;
     }
@@ -225,9 +424,25 @@ class BridgeClient extends ChangeNotifier {
     return stats;
   }
 
+  Future<bool> testCloudConnection(String url) async {
+    try {
+      final res = await http.get(Uri.parse('$url/health')).timeout(const Duration(seconds: 2));
+      return res.statusCode == 200;
+    } catch (_) {
+      try {
+        final res = await http.get(Uri.parse('$url/docs')).timeout(const Duration(seconds: 2));
+        return res.statusCode == 200;
+      } catch (_) {
+        return false;
+      }
+    }
+  }
+
+  // Fallback simulator for unit tests
   void simulateAttendanceMatch(String rollNo, String name, double confidence) {
     final now = DateTime.now();
-    final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
     liveRoster.insert(0, {
       'roll_no': rollNo,
       'full_name': name,

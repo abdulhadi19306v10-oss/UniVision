@@ -14,7 +14,8 @@ void main() {
 }
 
 class UniVisionDesktopApp extends StatelessWidget {
-  const UniVisionDesktopApp({super.key});
+  final BridgeClient? client;
+  const UniVisionDesktopApp({super.key, this.client});
 
   @override
   Widget build(BuildContext context) {
@@ -22,27 +23,44 @@ class UniVisionDesktopApp extends StatelessWidget {
       title: 'UniVision — Biometric Classroom Station',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
-      home: const MainWorkstationView(),
+      home: MainWorkstationView(client: client),
     );
   }
 }
 
 class MainWorkstationView extends StatefulWidget {
-  const MainWorkstationView({super.key});
+  final BridgeClient? client;
+  const MainWorkstationView({super.key, this.client});
 
   @override
   State<MainWorkstationView> createState() => _MainWorkstationViewState();
 }
 
 class _MainWorkstationViewState extends State<MainWorkstationView> {
-  final BridgeClient _client = BridgeClient();
+  late final BridgeClient _client;
+  bool _ownsClient = false;
   int _selectedTab = 0;
 
   @override
+  void initState() {
+    super.initState();
+    if (widget.client != null) {
+      _client = widget.client!;
+      _ownsClient = false;
+    } else {
+      _client = BridgeClient();
+      _ownsClient = true;
+    }
+  }
+
+  @override
   void dispose() {
-    _client.dispose();
+    if (_ownsClient) {
+      _client.dispose();
+    }
     super.dispose();
   }
+
 
   @override
   Widget build(BuildContext context) {

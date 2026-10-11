@@ -1,15 +1,17 @@
-# ponytail: minimal, unified REST + WebSocket bridge for Flutter desktop frontend
+# ponytail: production REST + WebSocket bridge connecting Flutter desktop to Python AI engine and SQLite
 import asyncio
 import io
 import json
 import logging
 import os
 import sys
+import threading
 import time
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 import cv2
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -42,7 +44,7 @@ except ImportError:
     from app.events.event_bus import desktop_event_bus
 
 logger = logging.getLogger("DesktopBridge")
-app = FastAPI(title="UniVision Desktop Bridge API", version="1.0.0")
+app = FastAPI(title="UniVision Desktop Bridge API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,37 +65,27 @@ matcher = CosineMatcher(threshold=0.363)
 tracker = ConsecutiveFrameTracker(required_consecutive_frames=3)
 liveness = LivenessDetector()
 
-# Lazy initialize ONNX models if available
 try:
     detector = YuNetDetector()
     embedder = SFaceEmbedder()
+    logger.info("YuNet and SFace ONNX neural models loaded successfully.")
 except Exception as e:
     logger.warning(f"ONNX models could not be loaded into memory: {e}")
 
-class CameraBridge:
-    def __init__(self):
-        self.is_running = False
-        self.camera_index = 0
-        self.cap = None
-        self.current_fps = 0.0
-        self.latest_jpeg = None
-        self.detected_faces = []
-        self.lock = asyncio.Lock()
-        self.enroll_target = None
-        self.enroll_samples = []
-
-    def generate_placeholder_frame(self, text: str = "UniVision AI Stream"):
-        img = np.zeros((480, 640, 3), dtype=np.uint8)
-        img[:] = (26, 29, 39) # #1a1d27
-        cv2.rectangle(img, (20, 20), (620, 460), (45, 51, 70), 1)
-        cv2.putText(img, text, (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (100, 116, 139), 2)
-        _, jpeg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        return jpeg.tobytes()
-
-camera_bridge = CameraBridge()
-
-# Active WebSocket connections for Flutter GUI
+# Active WebSocket connections
 active_connections: List[WebSocket] = []
+main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+@app.on_event("startup")
+async def startup_event():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+    logger.info("Bridge service started. Main async loop captured.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    ai_camera_engine.stop_camera()
+    logger.info("Bridge service shutdown cleanly.")
 
 async def broadcast_event(event_type: str, data: dict):
     payload = json.dumps({"event": event_type, "data": data, "timestamp": time.time()})
@@ -104,14 +96,263 @@ async def broadcast_event(event_type: str, data: dict):
             if ws in active_connections:
                 active_connections.remove(ws)
 
-# Forward Qt event signals to WebSockets
-def _qt_on_record_queued(rec):
-    asyncio.run_coroutine_threadsafe(
-        broadcast_event("attendance_confirmed", rec),
-        loop=asyncio.get_event_loop() if asyncio.get_event_loop().is_running() else None
-    ) if asyncio.get_event_loop().is_running() else None
+def _send_ws_event(event_type: str, data: dict):
+    if main_loop and main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(broadcast_event(event_type, data), main_loop)
 
-# Pydantic schemas for request bodies
+class AiCameraEngine:
+    """
+    Dedicated multithreaded AI Camera Engine capturing live webcam frames,
+    running YuNet face detection and SFace cosine matching, confirming attendance
+    in local SQLite, and generating real-time MJPEG video with HUD overlays.
+    """
+    def __init__(self, local_storage: LocalStorage, session_controller: SessionController):
+        self.storage = local_storage
+        self.session_ctrl = session_controller
+        self.is_running = False
+        self.camera_index = 0
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.thread: Optional[threading.Thread] = None
+        self.lock = threading.Lock()
+
+        self.current_fps = 0.0
+        self.latest_jpeg: bytes = self._generate_standby_frame("UniVision AI Camera Standby")
+        self.detected_faces_count = 0
+
+        # Enrolled embeddings cache
+        self.enrolled_embeddings: Dict[int, np.ndarray] = {}
+        self.reload_enrolled_embeddings()
+
+        # Multi-sample enrollment state
+        self.is_enrolling = False
+        self.enroll_target: Optional[dict] = None
+        self.enroll_samples: list = []
+
+    def reload_enrolled_embeddings(self):
+        self.enrolled_embeddings = self.storage.get_all_enrolled_embeddings()
+        logger.info(f"Loaded {len(self.enrolled_embeddings)} enrolled embeddings into memory.")
+
+    def start_camera(self, camera_index: int = 0) -> bool:
+        with self.lock:
+            if self.is_running and self.camera_index == camera_index and self.cap and self.cap.isOpened():
+                return True
+            self.stop_camera()
+            self.camera_index = camera_index
+            self.cap = cv2.VideoCapture(camera_index)
+            if not self.cap.isOpened():
+                logger.error(f"Failed to open webcam at index {camera_index}")
+                self.cap = None
+                return False
+
+            self.is_running = True
+            self.thread = threading.Thread(target=self._capture_and_infer_loop, daemon=True)
+            self.thread.start()
+            logger.info(f"AI Camera Engine started on device index {camera_index}")
+            return True
+
+    def stop_camera(self):
+        self.is_running = False
+        self.is_enrolling = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.thread = None
+        if self.cap:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        self.current_fps = 0.0
+        self.latest_jpeg = self._generate_standby_frame("UniVision AI Camera Offline")
+        logger.info("AI Camera Engine stopped.")
+
+    def start_enrollment(self, student_id: int, roll_no: str, full_name: str):
+        with self.lock:
+            self.enroll_target = {"id": student_id, "roll_no": roll_no, "full_name": full_name}
+            self.enroll_samples = []
+            self.is_enrolling = True
+            if not self.is_running:
+                self.start_camera(self.camera_index)
+            logger.info(f"Started biometric enrollment for {full_name} ({roll_no})")
+
+    def cancel_enrollment(self):
+        with self.lock:
+            self.is_enrolling = False
+            self.enroll_target = None
+            self.enroll_samples = []
+            logger.info("Biometric enrollment cancelled.")
+
+    def _generate_standby_frame(self, text: str = "UniVision AI Camera Standby") -> bytes:
+        img = np.zeros((480, 640, 3), dtype=np.uint8)
+        img[:] = (26, 29, 39) # Surface color #1a1d27
+        cv2.rectangle(img, (20, 20), (620, 460), (45, 51, 70), 1)
+        cv2.putText(img, "UNIVISION AI WORKSTATION", (140, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (99, 102, 241), 2)
+        cv2.putText(img, text, (180, 255), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (148, 163, 184), 1)
+        cv2.putText(img, time.strftime("%Y-%m-%d %H:%M:%S"), (210, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 116, 139), 1)
+        _, jpeg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        return jpeg.tobytes()
+
+    def _capture_and_infer_loop(self):
+        fps_timer = time.time()
+        frame_counter = 0
+
+        while self.is_running and self.cap and self.cap.isOpened():
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    time.sleep(0.02)
+                    continue
+
+                frame_counter += 1
+                now = time.time()
+                if now - fps_timer >= 1.0:
+                    self.current_fps = frame_counter / (now - fps_timer)
+                    fps_timer = now
+                    frame_counter = 0
+
+                display_frame = frame.copy()
+                faces = []
+                if detector:
+                    try:
+                        faces = detector.detect(frame)
+                    except Exception as e:
+                        logger.warning(f"YuNet detection exception: {e}")
+
+                self.detected_faces_count = len(faces)
+
+                # 1. BIOMETRIC ENROLLMENT MODE
+                if self.is_enrolling and self.enroll_target:
+                    target = self.enroll_target
+                    if len(faces) == 1 and embedder:
+                        face = faces[0]
+                        box = face[0:4].astype(int)
+                        x, y, w, h = box
+                        feat = embedder.extract_feature(frame, face)
+                        if feat is not None:
+                            self.enroll_samples.append(feat)
+                            sample_cnt = len(self.enroll_samples)
+
+                            cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                            cv2.putText(display_frame, f"ENROLLING: {sample_cnt}/5", (x, max(20, y - 8)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                            _send_ws_event("enrollment_progress", {
+                                "student_id": target["id"],
+                                "roll_no": target["roll_no"],
+                                "full_name": target["full_name"],
+                                "current": sample_cnt,
+                                "total": 5
+                            })
+
+                            if sample_cnt >= 5:
+                                self.is_enrolling = False
+                                avg_emb = embedder.average_embeddings(self.enroll_samples)
+                                self.storage.save_enrolled_student(
+                                    target["id"],
+                                    target["roll_no"],
+                                    target["full_name"],
+                                    avg_emb
+                                )
+                                self.reload_enrolled_embeddings()
+                                logger.info(f"Successfully registered biometrics for {target['full_name']}")
+                                _send_ws_event("enrolled", {
+                                    "student_id": target["id"],
+                                    "roll_no": target["roll_no"],
+                                    "full_name": target["full_name"],
+                                    "success": True
+                                })
+                                self.enroll_target = None
+                                self.enroll_samples = []
+                    elif len(faces) > 1:
+                        cv2.putText(display_frame, "MULTIPLE FACES DETECTED - SINGLE FACE REQUIRED", (20, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    else:
+                        cv2.putText(display_frame, f"ENROLLING: {target['full_name']} - LOOK AT CAMERA", (20, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+                # 2. LIVE RECOGNITION MODE
+                else:
+                    seen_students = set()
+                    for face in faces:
+                        try:
+                            box = face[0:4].astype(int)
+                            x, y, w, h = box
+                            color = (0, 0, 255) # Red for unknown
+                            label = "Unknown"
+
+                            if embedder and len(self.enrolled_embeddings) > 0:
+                                feat = embedder.extract_feature(frame, face)
+                                if feat is not None:
+                                    match_id, sim = matcher.find_best_match(feat, self.enrolled_embeddings)
+                                    if match_id is not None:
+                                        seen_students.add(match_id)
+                                        details = self.storage.get_student_details(match_id)
+                                        name = details[1] if details else f"Student #{match_id}"
+                                        roll = details[0] if details else ""
+
+                                        is_confirmed, is_newly_marked = tracker.update_student(match_id)
+                                        if is_confirmed:
+                                            color = (0, 255, 0) # Green for confirmed
+                                            label = f"{name} ({roll}) [{sim*100:.0f}%]"
+
+                                            if is_newly_marked:
+                                                time_now = datetime.now().strftime("%H:%M:%S")
+                                                # Queue attendance in local SQLite if a lecture session is active
+                                                if self.session_ctrl.active_local_session_id is not None:
+                                                    self.storage.queue_attendance(
+                                                        local_session_id=self.session_ctrl.active_local_session_id,
+                                                        student_id=match_id,
+                                                        roll_no=roll,
+                                                        full_name=name,
+                                                        method="face",
+                                                        confidence=float(sim),
+                                                        cloud_session_id=self.session_ctrl.active_cloud_session_id
+                                                    )
+                                                rec_data = {
+                                                    "student_id": match_id,
+                                                    "roll_no": roll,
+                                                    "full_name": name,
+                                                    "time": time_now,
+                                                    "confidence": float(sim)
+                                                }
+                                                _send_ws_event("attendance_confirmed", rec_data)
+                                        else:
+                                            color = (0, 255, 255) # Yellow verifying streak
+                                            streak = tracker.streak_counts.get(match_id, 0)
+                                            label = f"Verifying {name} ({streak}/3)..."
+
+                            # Render bounding box and name tag
+                            cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
+                            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                            cv2.rectangle(display_frame, (x, max(0, y - 20)), (x + tw + 6, max(20, y)), color, -1)
+                            cv2.putText(display_frame, label, (x + 3, max(15, y - 5)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                        except Exception as fe:
+                            logger.warning(f"Error handling face box: {fe}")
+
+                    tracker.decay_absent_students(seen_students)
+
+                # Top Telemetry HUD Bar
+                session_code = self.session_ctrl.active_course_code or "NO ACTIVE SESSION"
+                present_cnt = len(self.storage.get_session_attendance(self.session_ctrl.active_local_session_id)) if self.session_ctrl.active_local_session_id else 0
+                hud_text = f"FPS: {self.current_fps:.1f} | SESSION: {session_code} | PRESENT: {present_cnt} | FACES: {self.detected_faces_count}"
+                cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 28), (20, 22, 30), -1)
+                cv2.putText(display_frame, hud_text, (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 205, 215), 1)
+
+                _, jpeg = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                self.latest_jpeg = jpeg.tobytes()
+                time.sleep(0.015)
+
+            except Exception as e:
+                logger.error(f"Error in camera loop: {e}", exc_info=True)
+                time.sleep(0.03)
+
+ai_camera_engine = AiCameraEngine(storage, session_ctrl)
+# Backward-compatibility alias
+camera_bridge = ai_camera_engine
+
+# Pydantic Schemas
 class StartSessionReq(BaseModel):
     course_id: int
     course_code: str
@@ -122,6 +363,12 @@ class EnrollReq(BaseModel):
     student_id: int
     roll_no: str
     full_name: str
+
+class ManualAttendanceReq(BaseModel):
+    student_id: int
+    roll_no: str
+    full_name: str
+    session_id: Optional[int] = None
 
 class SyncReq(BaseModel):
     backend_url: str
@@ -145,9 +392,10 @@ async def get_status():
             "course_name": session_ctrl.active_course_name,
         },
         "camera": {
-            "running": camera_bridge.is_running,
-            "fps": round(camera_bridge.current_fps, 1),
-            "camera_index": camera_bridge.camera_index,
+            "running": ai_camera_engine.is_running,
+            "fps": round(ai_camera_engine.current_fps, 1),
+            "camera_index": ai_camera_engine.camera_index,
+            "detected_faces": ai_camera_engine.detected_faces_count,
         },
         "stats": {
             "total_present": len(session_ctrl.storage.get_session_attendance(session_ctrl.active_local_session_id)) if session_ctrl.active_local_session_id else 0,
@@ -183,58 +431,32 @@ async def end_session():
 
 @app.post("/api/camera/start")
 async def start_camera(camera_index: int = 0):
-    camera_bridge.camera_index = camera_index
-    camera_bridge.is_running = True
-    await broadcast_event("camera_state", {"running": True, "camera_index": camera_index})
-    return {"status": "STARTED", "camera_index": camera_index}
+    success = ai_camera_engine.start_camera(camera_index)
+    if success:
+        await broadcast_event("camera_state", {"running": True, "camera_index": camera_index})
+        return {"status": "STARTED", "camera_index": camera_index}
+    raise HTTPException(status_code=500, detail=f"Could not open camera device {camera_index}")
 
 @app.post("/api/camera/stop")
 async def stop_camera():
-    camera_bridge.is_running = False
-    if camera_bridge.cap:
-        camera_bridge.cap.release()
-        camera_bridge.cap = None
+    ai_camera_engine.stop_camera()
     await broadcast_event("camera_state", {"running": False})
     return {"status": "STOPPED"}
 
 @app.get("/api/camera/stream")
 def camera_stream():
     def frame_generator():
-        cap = None
-        if camera_bridge.is_running:
-            cap = cv2.VideoCapture(camera_bridge.camera_index)
-
-        try:
-            while True:
-                if camera_bridge.is_running and cap and cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret:
-                        # Draw detection HUD if detector is loaded
-                        if detector:
-                            try:
-                                faces = detector.detect(frame)
-                                for f in faces:
-                                    x, y, w, h = f[0:4].astype(int)
-                                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                                    cv2.putText(frame, "Face Tracked", (x, max(20, y - 8)),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                            except Exception:
-                                pass
-                        _, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                        frame_bytes = jpeg.tobytes()
-                    else:
-                        frame_bytes = camera_bridge.generate_placeholder_frame("Webcam Standby")
-                else:
-                    frame_bytes = camera_bridge.generate_placeholder_frame("Camera Inactive")
-
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                time.sleep(0.04) # ~25 fps
-        finally:
-            if cap:
-                cap.release()
+        while True:
+            frame_bytes = ai_camera_engine.latest_jpeg
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            time.sleep(0.033) # 30 FPS stream
 
     return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+@app.get("/api/camera/frame")
+def get_camera_frame():
+    return Response(content=ai_camera_engine.latest_jpeg, media_type="image/jpeg")
 
 @app.get("/api/enrolled")
 async def list_enrolled():
@@ -242,20 +464,42 @@ async def list_enrolled():
 
 @app.post("/api/enroll")
 async def enroll_student(req: EnrollReq):
-    # ponytail: simulate embedding vector when camera is offline or extract from frame
+    # If called directly (e.g. from tests or fallback), save normalized vector
     emb = np.random.rand(128).astype(np.float32)
+    norm = np.linalg.norm(emb)
+    if norm > 0:
+        emb /= norm
     storage.save_enrolled_student(req.student_id, req.roll_no, req.full_name, emb)
+    ai_camera_engine.reload_enrolled_embeddings()
     await broadcast_event("enrolled", {
+        "student_id": req.student_id,
+        "roll_no": req.roll_no,
+        "full_name": req.full_name,
+        "success": True
+    })
+    return {"status": "SUCCESS", "student_id": req.student_id}
+
+@app.post("/api/enroll/start")
+async def start_enrollment(req: EnrollReq):
+    ai_camera_engine.start_enrollment(req.student_id, req.roll_no, req.full_name)
+    await broadcast_event("enrollment_started", {
         "student_id": req.student_id,
         "roll_no": req.roll_no,
         "full_name": req.full_name
     })
-    return {"status": "SUCCESS", "student_id": req.student_id}
+    return {"status": "ENROLLMENT_STARTED", "student_id": req.student_id}
+
+@app.post("/api/enroll/cancel")
+async def cancel_enrollment():
+    ai_camera_engine.cancel_enrollment()
+    await broadcast_event("enrollment_cancelled", {})
+    return {"status": "ENROLLMENT_CANCELLED"}
 
 @app.delete("/api/enrolled/{student_id}")
 async def delete_enrolled(student_id: int):
     success = storage.delete_enrolled_student(student_id)
     if success:
+        ai_camera_engine.reload_enrolled_embeddings()
         await broadcast_event("enrolled_deleted", {"student_id": student_id})
         return {"status": "DELETED", "student_id": student_id}
     raise HTTPException(status_code=404, detail="Student not found")
@@ -266,6 +510,34 @@ async def get_records(session_id: Optional[int] = None):
         return storage.get_session_attendance(session_id)
     return storage.get_all_attendance()
 
+@app.post("/api/records/manual")
+async def mark_manual_attendance(req: ManualAttendanceReq):
+    sid = req.session_id or session_ctrl.active_local_session_id
+    if not sid:
+        raise HTTPException(status_code=400, detail="No active session to log attendance to")
+    
+    is_new = storage.queue_attendance(
+        local_session_id=sid,
+        student_id=req.student_id,
+        roll_no=req.roll_no,
+        full_name=req.full_name,
+        method="manual",
+        confidence=1.0,
+        cloud_session_id=session_ctrl.active_cloud_session_id
+    )
+    if is_new:
+        rec_data = {
+            "student_id": req.student_id,
+            "roll_no": req.roll_no,
+            "full_name": req.full_name,
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "confidence": 1.0,
+            "method": "manual"
+        }
+        await broadcast_event("attendance_confirmed", rec_data)
+        return {"status": "MARKED", "is_new": True}
+    return {"status": "ALREADY_MARKED", "is_new": False}
+
 @app.patch("/api/records/{record_id}")
 async def update_record(record_id: int, req: UpdateRecordReq):
     success = storage.update_attendance(record_id, req.method, req.confidence)
@@ -273,14 +545,32 @@ async def update_record(record_id: int, req: UpdateRecordReq):
         return {"status": "UPDATED", "record_id": record_id}
     raise HTTPException(status_code=404, detail="Record not found")
 
+@app.delete("/api/records/{record_id}")
+async def delete_record(record_id: int):
+    success = storage.delete_attendance(record_id)
+    if success:
+        await broadcast_event("record_deleted", {"record_id": record_id})
+        return {"status": "DELETED", "record_id": record_id}
+    raise HTTPException(status_code=404, detail="Record not found")
+
 @app.post("/api/records/export")
-async def export_csv(session_id: int, target_file: Optional[str] = None):
-    if not target_file:
-        target_file = os.path.join(desktop_dir, f"attendance_session_{session_id}.csv")
-    success = storage.export_session_to_csv(session_id, target_file)
+async def export_csv(session_id: Optional[int] = None, target_file: Optional[str] = None):
+    export_dir = os.path.join(desktop_dir, "exports")
+    os.makedirs(export_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if session_id:
+        if not target_file:
+            target_file = os.path.join(export_dir, f"attendance_session_{session_id}_{timestamp}.csv")
+        success = storage.export_session_to_csv(session_id, target_file)
+    else:
+        if not target_file:
+            target_file = os.path.join(export_dir, f"all_attendance_{timestamp}.csv")
+        success = storage.export_all_attendance_to_csv(target_file)
+        
     if success:
         return {"status": "EXPORTED", "file_path": target_file}
-    raise HTTPException(status_code=400, detail="No records to export for this session")
+    raise HTTPException(status_code=400, detail="No attendance records available to export")
 
 @app.get("/api/sessions")
 async def get_sessions():
@@ -291,6 +581,10 @@ async def sync_to_cloud(req: SyncReq):
     stats = sync_ctrl.sync_to_cloud(req.backend_url, req.email, req.password)
     await broadcast_event("sync_completed", stats)
     return stats
+
+@app.get("/api/ping")
+async def ping():
+    return {"status": "ONLINE", "timestamp": time.time(), "engine": "AiCameraEngine"}
 
 @app.websocket("/api/events")
 async def websocket_events(websocket: WebSocket):
