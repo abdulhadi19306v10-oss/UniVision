@@ -81,37 +81,43 @@ class _CameraStreamViewState extends State<CameraStreamView> {
 
       if (mounted) setState(() => _isConnected = true);
 
-      final List<int> buffer = [];
+      final BytesBuilder builder = BytesBuilder(copy: false);
 
       _streamSub = response.listen(
         (chunk) {
-          buffer.addAll(chunk);
+          builder.add(chunk);
+          final bytes = builder.takeBytes();
 
           // Find JPEG Start of Image (0xFF, 0xD8) and End of Image (0xFF, 0xD9)
           int start = -1;
           int end = -1;
 
-          for (int i = 0; i < buffer.length - 1; i++) {
-            if (start == -1 && buffer[i] == 0xFF && buffer[i + 1] == 0xD8) {
+          for (int i = 0; i < bytes.length - 1; i++) {
+            if (start == -1 && bytes[i] == 0xFF && bytes[i + 1] == 0xD8) {
               start = i;
             }
-            if (start != -1 && buffer[i] == 0xFF && buffer[i + 1] == 0xD9) {
+            if (start != -1 && bytes[i] == 0xFF && bytes[i + 1] == 0xD9) {
               end = i + 2;
               break;
             }
           }
 
           if (start != -1 && end != -1 && end > start) {
-            final frameData = Uint8List.fromList(buffer.sublist(start, end));
-            buffer.removeRange(0, end);
+            // High-performance zero-copy view over the byte array
+            final frameData = Uint8List.sublistView(bytes, start, end);
+            if (end < bytes.length) {
+              builder.add(bytes.sublist(end));
+            }
             if (mounted) {
               setState(() {
                 _currentFrame = frameData;
               });
             }
-          } else if (buffer.length > 1024 * 1024) {
-            // Buffer overflow guard: clear if broken frame
-            buffer.clear();
+          } else {
+            // Keep buffering until complete frame arrives (guard against overflow > 1MB)
+            if (bytes.length < 1024 * 1024) {
+              builder.add(bytes);
+            }
           }
         },
         onError: (_) {
@@ -157,9 +163,11 @@ class _CameraStreamViewState extends State<CameraStreamView> {
                 _currentFrame!,
                 gaplessPlayback: true,
                 fit: BoxFit.contain,
+                filterQuality: FilterQuality.low,
                 width: double.infinity,
                 height: double.infinity,
               )
+
             else if (widget.isRunning)
               Center(
                 child: Column(

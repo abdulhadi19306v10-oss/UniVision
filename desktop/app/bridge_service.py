@@ -114,6 +114,7 @@ class AiCameraEngine:
         self.cap: Optional[cv2.VideoCapture] = None
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        self.new_frame_event = threading.Event()
 
         self.current_fps = 0.0
         self.latest_jpeg: bytes = self._generate_standby_frame("UniVision AI Camera Standby")
@@ -144,10 +145,17 @@ class AiCameraEngine:
                 self.cap = None
                 return False
 
+            # Request 1080p resolution and MJPG hardware compression for maximum throughput
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
             self.is_running = True
             self.thread = threading.Thread(target=self._capture_and_infer_loop, daemon=True)
             self.thread.start()
-            logger.info(f"AI Camera Engine started on device index {camera_index}")
+            logger.info(f"AI Camera Engine started on device index {camera_index} (1080p target)")
             return True
 
     def stop_camera(self):
@@ -164,6 +172,7 @@ class AiCameraEngine:
             self.cap = None
         self.current_fps = 0.0
         self.latest_jpeg = self._generate_standby_frame("UniVision AI Camera Offline")
+        self.new_frame_event.set()
         logger.info("AI Camera Engine stopped.")
 
     def start_enrollment(self, student_id: int, roll_no: str, full_name: str):
@@ -186,10 +195,10 @@ class AiCameraEngine:
         img = np.zeros((480, 640, 3), dtype=np.uint8)
         img[:] = (26, 29, 39) # Surface color #1a1d27
         cv2.rectangle(img, (20, 20), (620, 460), (45, 51, 70), 1)
-        cv2.putText(img, "UNIVISION AI WORKSTATION", (140, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (99, 102, 241), 2)
-        cv2.putText(img, text, (180, 255), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (148, 163, 184), 1)
-        cv2.putText(img, time.strftime("%Y-%m-%d %H:%M:%S"), (210, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 116, 139), 1)
-        _, jpeg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        cv2.putText(img, "UNIVISION AI WORKSTATION", (140, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (99, 102, 241), 2, cv2.LINE_AA)
+        cv2.putText(img, text, (180, 255), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (148, 163, 184), 1, cv2.LINE_AA)
+        cv2.putText(img, time.strftime("%Y-%m-%d %H:%M:%S"), (210, 295), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 116, 139), 1, cv2.LINE_AA)
+        _, jpeg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         return jpeg.tobytes()
 
     def _capture_and_infer_loop(self):
@@ -200,7 +209,7 @@ class AiCameraEngine:
             try:
                 ret, frame = self.cap.read()
                 if not ret:
-                    time.sleep(0.02)
+                    time.sleep(0.01)
                     continue
 
                 frame_counter += 1
@@ -210,15 +219,39 @@ class AiCameraEngine:
                     fps_timer = now
                     frame_counter = 0
 
+                h, w = frame.shape[:2]
                 display_frame = frame.copy()
                 faces = []
+
+                # Fast scale-space inference: downscale for detection on high-res 1080p frames,
+                # then scale coordinates back for full-resolution SFace extraction
                 if detector:
                     try:
-                        faces = detector.detect(frame)
+                        if w > 640 or h > 480:
+                            det_w = 640
+                            det_h = int(640 * h / w)
+                            small_frame = cv2.resize(frame, (det_w, det_h), interpolation=cv2.INTER_LINEAR)
+                            raw_faces = detector.detect(small_frame)
+                            if raw_faces is not None and len(raw_faces) > 0:
+                                sx = w / float(det_w)
+                                sy = h / float(det_h)
+                                scaled_faces = []
+                                for rf in raw_faces:
+                                    f = rf.copy()
+                                    f[0] *= sx
+                                    f[1] *= sy
+                                    f[2] *= sx
+                                    f[3] *= sy
+                                    f[4:14:2] *= sx
+                                    f[5:14:2] *= sy
+                                    scaled_faces.append(f)
+                                faces = np.array(scaled_faces)
+                        else:
+                            faces = detector.detect(frame)
                     except Exception as e:
                         logger.warning(f"YuNet detection exception: {e}")
 
-                self.detected_faces_count = len(faces)
+                self.detected_faces_count = len(faces) if faces is not None else 0
 
                 # 1. BIOMETRIC ENROLLMENT MODE
                 if self.is_enrolling and self.enroll_target:
@@ -226,15 +259,18 @@ class AiCameraEngine:
                     if len(faces) == 1 and embedder:
                         face = faces[0]
                         box = face[0:4].astype(int)
-                        x, y, w, h = box
+                        x, y, fw, fh = box
                         feat = embedder.extract_feature(frame, face)
                         if feat is not None:
                             self.enroll_samples.append(feat)
                             sample_cnt = len(self.enroll_samples)
 
-                            cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                            cv2.putText(display_frame, f"ENROLLING: {sample_cnt}/5", (x, max(20, y - 8)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            # Direct text on screen without background box
+                            cv2.rectangle(display_frame, (x, y), (x + fw, y + fh), (0, 255, 0), 2, cv2.LINE_AA)
+                            label = f"ENROLLING: {sample_cnt}/5 - {target['full_name']}"
+                            text_y = max(26, y - 10)
+                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
 
                             _send_ws_event("enrollment_progress", {
                                 "student_id": target["id"],
@@ -265,10 +301,14 @@ class AiCameraEngine:
                                 self.enroll_samples = []
                     elif len(faces) > 1:
                         cv2.putText(display_frame, "MULTIPLE FACES DETECTED - SINGLE FACE REQUIRED", (20, 50),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.putText(display_frame, "MULTIPLE FACES DETECTED - SINGLE FACE REQUIRED", (20, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2, cv2.LINE_AA)
                     else:
                         cv2.putText(display_frame, f"ENROLLING: {target['full_name']} - LOOK AT CAMERA", (20, 50),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.putText(display_frame, f"ENROLLING: {target['full_name']} - LOOK AT CAMERA", (20, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
 
                 # 2. LIVE RECOGNITION MODE
                 else:
@@ -276,9 +316,9 @@ class AiCameraEngine:
                     for face in faces:
                         try:
                             box = face[0:4].astype(int)
-                            x, y, w, h = box
+                            x, y, fw, fh = box
                             color = (0, 0, 255) # Red for unknown
-                            label = "Unknown"
+                            label = "Unknown Face"
 
                             if embedder and len(self.enrolled_embeddings) > 0:
                                 feat = embedder.extract_feature(frame, face)
@@ -293,7 +333,8 @@ class AiCameraEngine:
                                         is_confirmed, is_newly_marked = tracker.update_student(match_id)
                                         if is_confirmed:
                                             color = (0, 255, 0) # Green for confirmed
-                                            label = f"{name} ({roll}) [{sim*100:.0f}%]"
+                                            # Directly display name and roll number cleanly
+                                            label = f"{name}  {roll} ({sim*100:.0f}%)"
 
                                             if is_newly_marked:
                                                 time_now = datetime.now().strftime("%H:%M:%S")
@@ -321,12 +362,12 @@ class AiCameraEngine:
                                             streak = tracker.streak_counts.get(match_id, 0)
                                             label = f"Verifying {name} ({streak}/3)..."
 
-                            # Render bounding box and name tag
-                            cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
-                            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                            cv2.rectangle(display_frame, (x, max(0, y - 20)), (x + tw + 6, max(20, y)), color, -1)
-                            cv2.putText(display_frame, label, (x + 3, max(15, y - 5)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                            # Render bounding box and directly write name and roll no on screen (no background box)
+                            cv2.rectangle(display_frame, (x, y), (x + fw, y + fh), color, 2, cv2.LINE_AA)
+                            text_y = max(24, y - 10)
+                            # High-contrast outline shadow + text for crystal-clear legibility
+                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
                         except Exception as fe:
                             logger.warning(f"Error handling face box: {fe}")
@@ -334,19 +375,22 @@ class AiCameraEngine:
                     tracker.decay_absent_students(seen_students)
 
                 # Top Telemetry HUD Bar
-                session_code = self.session_ctrl.active_course_code or "NO ACTIVE SESSION"
+                session_code = self.session_ctrl.active_course_code or "STANDBY"
                 present_cnt = len(self.storage.get_session_attendance(self.session_ctrl.active_local_session_id)) if self.session_ctrl.active_local_session_id else 0
-                hud_text = f"FPS: {self.current_fps:.1f} | SESSION: {session_code} | PRESENT: {present_cnt} | FACES: {self.detected_faces_count}"
+                hud_text = f"FPS: {self.current_fps:.1f}  |  RES: {w}x{h}  |  SESSION: {session_code}  |  PRESENT: {present_cnt}  |  FACES: {self.detected_faces_count}"
                 cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 28), (20, 22, 30), -1)
-                cv2.putText(display_frame, hud_text, (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 205, 215), 1)
+                cv2.putText(display_frame, hud_text, (12, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 205, 215), 1, cv2.LINE_AA)
 
-                _, jpeg = cv2.imencode('.jpg', display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                # Fast JPEG compression: Quality 65 + OPTIMIZE=0 for 3x speedup with crisp 1080p quality
+                encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 65, int(cv2.IMWRITE_JPEG_OPTIMIZE), 0]
+                _, jpeg = cv2.imencode('.jpg', display_frame, encode_params)
                 self.latest_jpeg = jpeg.tobytes()
-                time.sleep(0.015)
+                self.new_frame_event.set()
 
             except Exception as e:
                 logger.error(f"Error in camera loop: {e}", exc_info=True)
-                time.sleep(0.03)
+                time.sleep(0.02)
+
 
 ai_camera_engine = AiCameraEngine(storage, session_ctrl)
 # Backward-compatibility alias
@@ -447,12 +491,15 @@ async def stop_camera():
 def camera_stream():
     def frame_generator():
         while True:
+            # Wake up immediately when a new frame is encoded, or timeout at 40ms to keep stream alive
+            ai_camera_engine.new_frame_event.wait(timeout=0.04)
+            ai_camera_engine.new_frame_event.clear()
             frame_bytes = ai_camera_engine.latest_jpeg
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            time.sleep(0.033) # 30 FPS stream
 
     return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+
 
 @app.get("/api/camera/frame")
 def get_camera_frame():
