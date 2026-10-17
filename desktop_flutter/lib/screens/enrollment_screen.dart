@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
 import '../services/bridge_client.dart';
+import '../widgets/camera_stream_view.dart';
 
 // ponytail: biometric registration screen with real multi-angle camera capture and offline student directory
 class EnrollmentScreen extends StatefulWidget {
@@ -24,15 +25,22 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
   void initState() {
     super.initState();
     widget.client.loadEnrolledStudents();
+    widget.client.addListener(_onClientUpdated);
   }
 
   @override
   void dispose() {
+    widget.client.removeListener(_onClientUpdated);
     _idCtrl.dispose();
     _rollCtrl.dispose();
     _nameCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _onClientUpdated() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _clearForm() {
@@ -44,16 +52,29 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     });
   }
 
+  void _prefillTestStudent() {
+    final nextId = widget.client.nextStudentId;
+    setState(() {
+      _idCtrl.text = nextId.toString();
+      _rollCtrl.text = '2024-CS-${nextId.toString().padLeft(3, '0')}';
+      _nameCtrl.text = 'Student #$nextId';
+    });
+  }
+
   Future<void> _startBiometricEnrollment() async {
-    final int? id = int.tryParse(_idCtrl.text.trim());
     final String roll = _rollCtrl.text.trim();
     final String name = _nameCtrl.text.trim();
 
-    if (id == null || roll.isEmpty || name.isEmpty) {
+    if (roll.isEmpty || name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all student biometric fields (ID, Roll No, Name).')),
+        const SnackBar(content: Text('Please fill all student biometric fields (Roll No, Name).')),
       );
       return;
+    }
+
+    final int id = int.tryParse(_idCtrl.text.trim()) ?? widget.client.nextStudentId;
+    if (_idCtrl.text.trim().isEmpty) {
+      _idCtrl.text = id.toString();
     }
 
     setState(() => _isEnrolling = true);
@@ -64,11 +85,19 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
       name: name,
     );
 
-    if (!success) {
-      if (mounted) {
-        setState(() => _isEnrolling = false);
+    if (mounted) {
+      setState(() => _isEnrolling = false);
+      if (!success) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not start camera enrollment. Ensure camera is connected.')),
+          const SnackBar(content: Text('Could not complete biometric enrollment. Please ensure your face is clearly visible to the camera and try again.')),
+        );
+      } else {
+        _clearForm();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppTheme.success,
+            content: Text('Successfully registered biometric profile for $name ($roll)!'),
+          ),
         );
       }
     }
@@ -76,27 +105,33 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
 
   Future<void> _cancelEnrollment() async {
     await widget.client.cancelBiometricEnrollment();
-    setState(() => _isEnrolling = false);
+    if (mounted) {
+      setState(() => _isEnrolling = false);
+    }
   }
 
   Future<void> _manualDirectRegister() async {
-    final int? id = int.tryParse(_idCtrl.text.trim());
     final String roll = _rollCtrl.text.trim();
     final String name = _nameCtrl.text.trim();
 
-    if (id == null || roll.isEmpty || name.isEmpty) {
+    if (roll.isEmpty || name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all student fields.')),
+        const SnackBar(content: Text('Please enter University Roll Number and Student Name.')),
       );
       return;
     }
+
+    final int id = int.tryParse(_idCtrl.text.trim()) ?? widget.client.nextStudentId;
 
     final success = await widget.client.enrollStudent(id: id, rollNo: roll, name: name);
     if (mounted) {
       if (success) {
         _clearForm();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Successfully registered student $name!')),
+          SnackBar(
+            backgroundColor: AppTheme.success,
+            content: Text('Successfully registered student $name ($roll)!'),
+          ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -136,6 +171,106 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     );
   }
 
+  void _showEditStudentDialog(int id, String currentRoll, String currentName) {
+    final TextEditingController editRollCtrl = TextEditingController(text: currentRoll);
+    final TextEditingController editNameCtrl = TextEditingController(text: currentName);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surfaceElevated,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppTheme.border),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.edit_note_rounded, color: AppTheme.primary, size: 22),
+            const SizedBox(width: 8),
+            Text('Edit Student #$id', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+          ],
+        ),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('University Roll Number:',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: editRollCtrl,
+                decoration: const InputDecoration(
+                  hintText: 'e.g. 2024-CS-001',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text('Full Name:',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: editNameCtrl,
+                decoration: const InputDecoration(
+                  hintText: 'e.g. Alice Johnson',
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primary,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final newRoll = editRollCtrl.text.trim();
+              final newName = editNameCtrl.text.trim();
+              if (newRoll.isEmpty || newName.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please provide both roll number and student name.')),
+                );
+                return;
+              }
+              Navigator.pop(ctx);
+              final success = await widget.client.updateEnrolledStudent(
+                studentId: id,
+                rollNo: newRoll,
+                name: newName,
+              );
+              if (mounted) {
+                if (success) {
+                  ScaffoldMessenger.of(context)
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(
+                      SnackBar(
+                        backgroundColor: AppTheme.success,
+                        content: Text('Updated student details for $newName ($newRoll)!'),
+                      ),
+                    );
+                } else {
+                  ScaffoldMessenger.of(context)
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(
+                      const SnackBar(content: Text('Failed to update student details.')),
+                    );
+                }
+              }
+            },
+            child: const Text('Save Changes'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final String searchQuery = _searchCtrl.text.trim().toLowerCase();
@@ -149,7 +284,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
     final activeProg = widget.client.activeEnrollmentProgress;
     final int currentSample = activeProg != null ? (activeProg['current'] ?? 0) : 0;
     final int totalSamples = activeProg != null ? (activeProg['total'] ?? 5) : 5;
-    final bool isCapturing = activeProg != null && currentSample < totalSamples;
+    final bool isCapturing = _isEnrolling || activeProg != null;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -193,7 +328,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
                   const SizedBox(height: 6),
                   TextField(
                     controller: _idCtrl,
-                    decoration: const InputDecoration(hintText: 'e.g. 101'),
+                    decoration: InputDecoration(hintText: 'e.g. ${widget.client.nextStudentId} (Auto if blank)'),
                   ),
                   const SizedBox(height: 14),
 
@@ -234,9 +369,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
                                 child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primary),
                               ),
                               const SizedBox(width: 8),
-                              Text(
-                                'Capturing Angle $currentSample of $totalSamples...',
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppTheme.primary),
+                              Expanded(
+                                child: Text(
+                                  'Capturing Angle $currentSample of $totalSamples...',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppTheme.primary),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             ],
                           ),
@@ -252,6 +390,21 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
                             'Please look directly into the camera. Ensure only one face is visible in frame.',
                             style: TextStyle(color: AppTheme.textMuted, fontSize: 11),
                           ),
+                          if (widget.client.status['camera']?['running'] == true) ...[
+                            const SizedBox(height: 10),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: SizedBox(
+                                height: 160,
+                                width: double.infinity,
+                                child: CameraStreamView(
+                                  streamUrl: '${widget.client.baseUrl}/api/camera/stream',
+                                  isRunning: true,
+                                  currentFps: (widget.client.status['camera']?['fps'] ?? 0.0).toDouble(),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -271,22 +424,46 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
                         onPressed: _startBiometricEnrollment,
                         icon: const Icon(Icons.camera_alt_rounded, size: 16),
                         label: const Text('Capture Biometrics via Camera'),
-                        style: ElevatedButton.styleFrom(backgroundColor: AppTheme.success),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.success,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
+                          flex: 5,
                           child: OutlinedButton(
                             onPressed: _manualDirectRegister,
-                            child: const Text('Manual Register', style: TextStyle(fontSize: 12)),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            ),
+                            child: const Text('Manual Register', style: TextStyle(fontSize: 11)),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        OutlinedButton(
-                          onPressed: _clearForm,
-                          child: const Text('Clear', style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 3,
+                          child: OutlinedButton(
+                            onPressed: _prefillTestStudent,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            ),
+                            child: const Text('Prefill', style: TextStyle(fontSize: 11)),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 2,
+                          child: OutlinedButton(
+                            onPressed: _clearForm,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                            ),
+                            child: const Text('Clear', style: TextStyle(fontSize: 11)),
+                          ),
                         ),
                       ],
                     ),
@@ -397,10 +574,20 @@ class _EnrollmentScreenState extends State<EnrollmentScreen> {
                                 '$roll • Registered: $formattedDate',
                                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                               ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppTheme.error),
-                                tooltip: 'Delete biometric profile',
-                                onPressed: () => _confirmDeleteStudent(id, name),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit_outlined, size: 18, color: AppTheme.primary),
+                                    tooltip: 'Edit student details',
+                                    onPressed: () => _showEditStudentDialog(id, roll, name),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppTheme.error),
+                                    tooltip: 'Delete biometric profile',
+                                    onPressed: () => _confirmDeleteStudent(id, name),
+                                  ),
+                                ],
                               ),
                             );
                           },

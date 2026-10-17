@@ -34,3 +34,13 @@ class EnrollmentController:
                 {"action": "STUDENT_DELETED", "student_id": student_id}
             )
         return success
+
+    def update_student(self, student_id: int, roll_no: str, full_name: str) -> bool:
+        success = self.storage.update_enrolled_student(student_id, roll_no=roll_no, full_name=full_name)
+        if success:
+            self.camera_worker.reload_enrolled_embeddings()
+            desktop_event_bus.sync_status_changed.emit(
+                f"Updated student #{student_id} ({full_name})",
+                {"action": "STUDENT_UPDATED", "student_id": student_id, "roll_no": roll_no, "full_name": full_name}
+            )
+        return success

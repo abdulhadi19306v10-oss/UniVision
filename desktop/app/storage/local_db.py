@@ -116,6 +116,41 @@ class LocalStorage:
             conn.commit()
             return cursor.rowcount > 0
 
+    def update_enrolled_student(self, student_id: int, roll_no: Optional[str] = None, full_name: Optional[str] = None) -> bool:
+        """
+        Updates an enrolled student's roll number and/or full name in local SQLite storage,
+        and cascades changes to attendance records.
+        """
+        updates = []
+        params = []
+        if roll_no is not None and str(roll_no).strip():
+            updates.append("roll_no = ?")
+            params.append(str(roll_no).strip())
+        if full_name is not None and str(full_name).strip():
+            updates.append("full_name = ?")
+            params.append(str(full_name).strip())
+        if not updates:
+            return False
+        params.append(student_id)
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE enrolled_students SET {', '.join(updates)} WHERE student_id = ?", params)
+            if cursor.rowcount > 0:
+                # Also cascade roll_no and full_name updates to attendance_queue
+                att_updates = []
+                att_params = []
+                if roll_no is not None and str(roll_no).strip():
+                    att_updates.append("roll_no = ?")
+                    att_params.append(str(roll_no).strip())
+                if full_name is not None and str(full_name).strip():
+                    att_updates.append("full_name = ?")
+                    att_params.append(str(full_name).strip())
+                att_params.append(student_id)
+                conn.execute(f"UPDATE attendance_queue SET {', '.join(att_updates)} WHERE student_id = ?", att_params)
+                conn.commit()
+                return True
+            return False
+
     # --- Session Management ---
     def create_local_session(self, course_id: int, course_code: str, course_name: str, cloud_session_id: Optional[int] = None) -> int:
         now_str = datetime.now(timezone.utc).isoformat()

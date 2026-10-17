@@ -8,7 +8,7 @@ class YuNetDetector:
     Lightweight, real-time face detector using OpenCV's YuNet ONNX model.
     Runs at 100+ FPS on standard CPU.
     """
-    def __init__(self, model_path: Optional[str] = None, conf_threshold: float = 0.8, nms_threshold: float = 0.3):
+    def __init__(self, model_path: Optional[str] = None, conf_threshold: float = 0.6, nms_threshold: float = 0.3):
         if model_path is None:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             model_path = os.path.join(base_dir, "models", "face_detection_yunet_2023mar.onnx")

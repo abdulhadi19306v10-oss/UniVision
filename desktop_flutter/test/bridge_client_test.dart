@@ -49,6 +49,12 @@ void main() {
       expect(client.enrolledStudents.length, initialCount + 1);
       expect(client.enrolledStudents.any((s) => s['student_id'] == 777), isTrue);
 
+      final updated = await client.updateEnrolledStudent(studentId: 777, rollNo: '2024-TEST-777-EDITED', name: 'Updated Student');
+      expect(updated, isTrue);
+      final student = client.enrolledStudents.firstWhere((s) => s['student_id'] == 777);
+      expect(student['roll_no'], '2024-TEST-777-EDITED');
+      expect(student['full_name'], 'Updated Student');
+
       final deleted = await client.deleteEnrolled(777);
       expect(deleted, isTrue);
       expect(client.enrolledStudents.any((s) => s['student_id'] == 777), isFalse);

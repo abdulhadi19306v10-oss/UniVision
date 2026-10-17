@@ -29,7 +29,8 @@ class SFaceEmbedder:
         Safely returns None if alignment or feature extraction fails.
         """
         try:
-            aligned_face = self.recognizer.alignCrop(frame, face_box_landmarks)
+            face_f32 = np.ascontiguousarray(face_box_landmarks, dtype=np.float32)
+            aligned_face = self.recognizer.alignCrop(frame, face_f32)
             if aligned_face is None or aligned_face.size == 0:
                 return None
             feature = self.recognizer.feature(aligned_face)

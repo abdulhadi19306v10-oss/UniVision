@@ -83,6 +83,11 @@ def test_local_storage_lifecycle(tmp_path):
     details = storage.get_student_details(1)
     assert details == ("2024-CS-001", "Alice Johnson")
 
+    # Update student details
+    updated = storage.update_enrolled_student(1, roll_no="2024-CS-001-MOD", full_name="Alice Smith")
+    assert updated is True
+    assert storage.get_student_details(1) == ("2024-CS-001-MOD", "Alice Smith")
+
     # 2. Local sessions
     sid = storage.create_local_session(course_id=101, course_code="CS-401", course_name="SDA")
     assert sid == 1
@@ -160,6 +165,17 @@ def test_bridge_service_api():
     enrolled_list = bridge_client.get("/api/enrolled")
     assert enrolled_list.status_code == 200
     assert any(s["student_id"] == 999 for s in enrolled_list.json())
+
+    # Update enrolled student details
+    patch_res = bridge_client.patch("/api/enrolled/999", json={
+        "roll_no": "2024-TEST-999-EDITED",
+        "full_name": "Test Student Edited"
+    })
+    assert patch_res.status_code == 200
+    updated_list = bridge_client.get("/api/enrolled").json()
+    matched = next(s for s in updated_list if s["student_id"] == 999)
+    assert matched["roll_no"] == "2024-TEST-999-EDITED"
+    assert matched["full_name"] == "Test Student Edited"
 
     # Delete enrolled
     del_res = bridge_client.delete("/api/enrolled/999")

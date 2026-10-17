@@ -113,7 +113,7 @@ class AiCameraEngine:
         self.camera_index = 0
         self.cap: Optional[cv2.VideoCapture] = None
         self.thread: Optional[threading.Thread] = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.new_frame_event = threading.Event()
 
         self.current_fps = 0.0
@@ -139,7 +139,15 @@ class AiCameraEngine:
                 return True
             self.stop_camera()
             self.camera_index = camera_index
-            self.cap = cv2.VideoCapture(camera_index)
+            
+            # On Windows, try DirectShow (CAP_DSHOW) first for rapid hardware startup, fallback to default
+            if sys.platform.startswith("win"):
+                self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+                if not self.cap.isOpened():
+                    self.cap = cv2.VideoCapture(camera_index)
+            else:
+                self.cap = cv2.VideoCapture(camera_index)
+
             if not self.cap.isOpened():
                 logger.error(f"Failed to open webcam at index {camera_index}")
                 self.cap = None
@@ -155,34 +163,42 @@ class AiCameraEngine:
             self.is_running = True
             self.thread = threading.Thread(target=self._capture_and_infer_loop, daemon=True)
             self.thread.start()
-            logger.info(f"AI Camera Engine started on device index {camera_index} (1080p target)")
+            logger.info(f"AI Camera Engine started on device index {camera_index}")
             return True
 
     def stop_camera(self):
-        self.is_running = False
-        self.is_enrolling = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        self.thread = None
-        if self.cap:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
-        self.current_fps = 0.0
-        self.latest_jpeg = self._generate_standby_frame("UniVision AI Camera Offline")
-        self.new_frame_event.set()
-        logger.info("AI Camera Engine stopped.")
+        with self.lock:
+            self.is_running = False
+            self.is_enrolling = False
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=1.0)
+            self.thread = None
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
+            self.current_fps = 0.0
+            self.latest_jpeg = self._generate_standby_frame("UniVision AI Camera Offline")
+            self.new_frame_event.set()
+            logger.info("AI Camera Engine stopped.")
 
-    def start_enrollment(self, student_id: int, roll_no: str, full_name: str):
+    def start_enrollment(self, student_id: int, roll_no: str, full_name: str) -> bool:
         with self.lock:
             self.enroll_target = {"id": student_id, "roll_no": roll_no, "full_name": full_name}
             self.enroll_samples = []
             self.is_enrolling = True
             if not self.is_running:
-                self.start_camera(self.camera_index)
+                ok = self.start_camera(self.camera_index)
+                if not ok:
+                    self.is_enrolling = False
+                    self.enroll_target = None
+                    logger.error("Failed to start camera for enrollment")
+                    return False
+                _send_ws_event("camera_state", {"running": True, "camera_index": self.camera_index})
             logger.info(f"Started biometric enrollment for {full_name} ({roll_no})")
+            return True
 
     def cancel_enrollment(self):
         with self.lock:
@@ -245,7 +261,7 @@ class AiCameraEngine:
                                     f[4:14:2] *= sx
                                     f[5:14:2] *= sy
                                     scaled_faces.append(f)
-                                faces = np.array(scaled_faces)
+                                faces = np.array(scaled_faces, dtype=np.float32)
                         else:
                             faces = detector.detect(frame)
                     except Exception as e:
@@ -260,45 +276,53 @@ class AiCameraEngine:
                         face = faces[0]
                         box = face[0:4].astype(int)
                         x, y, fw, fh = box
-                        feat = embedder.extract_feature(frame, face)
-                        if feat is not None:
-                            self.enroll_samples.append(feat)
-                            sample_cnt = len(self.enroll_samples)
+                        sample_cnt = len(self.enroll_samples)
 
-                            # Direct text on screen without background box
-                            cv2.rectangle(display_frame, (x, y), (x + fw, y + fh), (0, 255, 0), 2, cv2.LINE_AA)
-                            label = f"ENROLLING: {sample_cnt}/5 - {target['full_name']}"
-                            text_y = max(26, y - 10)
-                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
-                            cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
+                        # Render bounding box and clean HUD on EVERY frame with a face
+                        cv2.rectangle(display_frame, (x, y), (x + fw, y + fh), (0, 255, 0), 2, cv2.LINE_AA)
+                        label = f"ENROLLING: {sample_cnt}/5 - {target['full_name']}"
+                        text_y = max(26, y - 10)
+                        cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
+                        cv2.putText(display_frame, label, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
 
-                            _send_ws_event("enrollment_progress", {
-                                "student_id": target["id"],
-                                "roll_no": target["roll_no"],
-                                "full_name": target["full_name"],
-                                "current": sample_cnt,
-                                "total": 5
-                            })
+                        now_sample = time.time()
+                        if not hasattr(self, '_last_enroll_sample_time'):
+                            self._last_enroll_sample_time = 0.0
 
-                            if sample_cnt >= 5:
-                                self.is_enrolling = False
-                                avg_emb = embedder.average_embeddings(self.enroll_samples)
-                                self.storage.save_enrolled_student(
-                                    target["id"],
-                                    target["roll_no"],
-                                    target["full_name"],
-                                    avg_emb
-                                )
-                                self.reload_enrolled_embeddings()
-                                logger.info(f"Successfully registered biometrics for {target['full_name']}")
-                                _send_ws_event("enrolled", {
+                        if now_sample - self._last_enroll_sample_time >= 0.25:
+                            feat = embedder.extract_feature(frame, face)
+                            if feat is not None:
+                                self._last_enroll_sample_time = now_sample
+                                self.enroll_samples.append(feat)
+                                sample_cnt = len(self.enroll_samples)
+
+                                _send_ws_event("enrollment_progress", {
                                     "student_id": target["id"],
                                     "roll_no": target["roll_no"],
                                     "full_name": target["full_name"],
-                                    "success": True
+                                    "current": sample_cnt,
+                                    "total": 5
                                 })
-                                self.enroll_target = None
-                                self.enroll_samples = []
+
+                                if sample_cnt >= 5:
+                                    self.is_enrolling = False
+                                    avg_emb = embedder.average_embeddings(self.enroll_samples)
+                                    self.storage.save_enrolled_student(
+                                        target["id"],
+                                        target["roll_no"],
+                                        target["full_name"],
+                                        avg_emb
+                                    )
+                                    self.reload_enrolled_embeddings()
+                                    logger.info(f"Successfully registered biometrics for {target['full_name']}")
+                                    _send_ws_event("enrolled", {
+                                        "student_id": target["id"],
+                                        "roll_no": target["roll_no"],
+                                        "full_name": target["full_name"],
+                                        "success": True
+                                    })
+                                    self.enroll_target = None
+                                    self.enroll_samples = []
                     elif len(faces) > 1:
                         cv2.putText(display_frame, "MULTIPLE FACES DETECTED - SINGLE FACE REQUIRED", (20, 50),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3, cv2.LINE_AA)
@@ -423,6 +447,10 @@ class UpdateRecordReq(BaseModel):
     method: Optional[str] = None
     confidence: Optional[float] = None
 
+class UpdateStudentReq(BaseModel):
+    roll_no: Optional[str] = None
+    full_name: Optional[str] = None
+
 @app.get("/api/status")
 async def get_status():
     enrolled = storage.list_enrolled_students()
@@ -440,6 +468,12 @@ async def get_status():
             "fps": round(ai_camera_engine.current_fps, 1),
             "camera_index": ai_camera_engine.camera_index,
             "detected_faces": ai_camera_engine.detected_faces_count,
+        },
+        "enrollment": {
+            "is_enrolling": ai_camera_engine.is_enrolling,
+            "target": ai_camera_engine.enroll_target,
+            "samples": len(ai_camera_engine.enroll_samples),
+            "total": 5
         },
         "stats": {
             "total_present": len(session_ctrl.storage.get_session_attendance(session_ctrl.active_local_session_id)) if session_ctrl.active_local_session_id else 0,
@@ -528,19 +562,36 @@ async def enroll_student(req: EnrollReq):
 
 @app.post("/api/enroll/start")
 async def start_enrollment(req: EnrollReq):
-    ai_camera_engine.start_enrollment(req.student_id, req.roll_no, req.full_name)
+    success = ai_camera_engine.start_enrollment(req.student_id, req.roll_no, req.full_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="Could not initialize camera for biometric enrollment")
+    await broadcast_event("camera_state", {"running": ai_camera_engine.is_running, "camera_index": ai_camera_engine.camera_index})
     await broadcast_event("enrollment_started", {
         "student_id": req.student_id,
         "roll_no": req.roll_no,
         "full_name": req.full_name
     })
-    return {"status": "ENROLLMENT_STARTED", "student_id": req.student_id}
+    return {"status": "ENROLLMENT_STARTED", "student_id": req.student_id, "camera_running": ai_camera_engine.is_running}
 
 @app.post("/api/enroll/cancel")
 async def cancel_enrollment():
     ai_camera_engine.cancel_enrollment()
     await broadcast_event("enrollment_cancelled", {})
     return {"status": "ENROLLMENT_CANCELLED"}
+
+@app.patch("/api/enrolled/{student_id}")
+@app.put("/api/enrolled/{student_id}")
+async def update_enrolled(student_id: int, req: UpdateStudentReq):
+    success = storage.update_enrolled_student(student_id, roll_no=req.roll_no, full_name=req.full_name)
+    if success:
+        ai_camera_engine.reload_enrolled_embeddings()
+        await broadcast_event("enrolled_updated", {
+            "student_id": student_id,
+            "roll_no": req.roll_no,
+            "full_name": req.full_name
+        })
+        return {"status": "UPDATED", "student_id": student_id}
+    raise HTTPException(status_code=404, detail="Student not found or invalid update")
 
 @app.delete("/api/enrolled/{student_id}")
 async def delete_enrolled(student_id: int):
