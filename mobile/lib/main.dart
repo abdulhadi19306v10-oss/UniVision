@@ -11,11 +11,16 @@ class AttendanceApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Focus Student Attendance',
+      title: 'UniVision — Student Attendance',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2563EB),
+          primary: const Color(0xFF2563EB),
+        ),
+        fontFamily: 'Roboto',
         useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFFF8FAFC),
       ),
       home: const LoginScreen(),
     );

@@ -234,44 +234,49 @@ lab 3/
 ├── focus.md                        # Master product specification & requirements
 ├── README.md                       # Complete system documentation (this file)
 ├── run_desktop_flutter.bat         # One-click launcher for Flutter Desktop + AI Bridge
-├── run_dektop_flutter.bat          # Convenience alias launcher
-├── run_dektop_flutter.app          # Shell/batch executable launcher
 ├── run_desktop.bat                 # PySide6 desktop launcher
 │
 ├── desktop_flutter/                # Redesigned Flutter Desktop Workstation (Native Windows)
 │   ├── pubspec.yaml                # Flutter desktop dependencies
 │   ├── lib/
-│   │   ├── main.dart               # Workstation entry point
+│   │   ├── main.dart               # Workstation entry point & role-based view orchestration
 │   │   ├── theme.dart              # Fluent Neumorphic dark theme
 │   │   ├── services/
-│   │   │   └── bridge_client.dart  # REST & WebSocket client to local Python AI engine
+│   │   │   └── bridge_client.dart  # REST & WebSocket client with authentication & offline demo mode
 │   │   ├── widgets/
-│   │   │   ├── sidebar.dart        # Station navigation & offline SQLite indicator
-│   │   │   └── top_bar.dart        # Active session context & KPI chips (Present, FPS, Sync Queue)
+│   │   │   ├── sidebar.dart        # Station navigation, user profile card, role badge & log out
+│   │   │   ├── top_bar.dart        # Role context & telemetry chips (Present, FPS, Sync Queue)
+│   │   │   └── camera_stream_view.dart # High-FPS camera stream & AI HUD canvas
 │   │   └── screens/
-│   │       ├── live_monitoring_screen.dart   # Camera HUD, quick session controls, live roster
-│   │       ├── enrollment_screen.dart        # 5-sample biometric registration & directory
-│   │       ├── attendance_logs_screen.dart   # Offline queue verification & CSV export
-│   │       └── cloud_diagnostics_screen.dart # Cloud sync trigger & activity log terminal
+│   │       ├── login_screen.dart   # Role-based login (Admin, Teacher, Student) with 1-click demos
+│   │       ├── live_monitoring_screen.dart   # Camera HUD, quick session controls, live roster (Admin/Teacher)
+│   │       ├── enrollment_screen.dart        # 5-sample biometric registration & directory (Admin only)
+│   │       ├── attendance_logs_screen.dart   # Offline queue verification & CSV export (Admin/Teacher)
+│   │       ├── cloud_diagnostics_screen.dart # Cloud sync trigger & activity log terminal (Admin only)
+│   │       └── student_attendance_screen.dart# Self-service student portal, KPI cards & personal CSV export
 │   └── test/
 │       ├── bridge_client_test.dart # Unit tests for BridgeClient
-│       └── widget_test.dart        # Integration & UI test suite
+│       ├── enrollment_test.dart    # Biometric enrollment UI & form verification test
+│       ├── role_auth_test.dart     # Role authentication, view isolation & logout test
+│       └── widget_test.dart        # Desktop workstation integration & UI test suite
 │
 ├── desktop/                        # Python Edge AI & Storage Engine
 │   ├── prototype_recognition.py    # Step 1 Standalone Recognition Prototype
-│   ├── requirements.txt            # Desktop dependencies (PySide6, OpenCV, ONNX, FastAPI)
+│   ├── requirements.txt            # Desktop dependencies (PyQt6/PySide6, OpenCV, ONNX, FastAPI)
 │   ├── test_desktop_architecture.py# Desktop MVC + EventBus tests
 │   ├── test_pipeline_and_storage.py# Biometric math, liveness, SQLite & bridge API tests
+│   ├── test_role_auth_and_views.py # Role authentication, student isolation, & PyQt window tests
 │   ├── models/                     # Downloaded ONNX Model weights
 │   │   ├── face_detection_yunet_2023mar.onnx
 │   │   └── face_recognition_sface_2021dec.onnx
 │   └── app/
-│       ├── main.py                 # PySide6 application launcher
+│       ├── main.py                 # PyQt6 native desktop application launcher
 │       ├── bridge_service.py       # REST + WebSocket bridge for Flutter desktop
 │       ├── recognition/            # Detection, embedding, matching, tracking, liveness
 │       ├── storage/                # Local SQLite storage & offline queue
 │       ├── controllers/            # SessionController, EnrollmentController, SyncController
 │       ├── events/                 # DesktopEventBus (Qt Signals)
+│       ├── ui/                     # PyQt6 views (login, live station, student portal)
 │       └── workers/                # CameraWorker background inference thread
 │
 ├── backend/                        # Cloud FastAPI Service
@@ -290,12 +295,16 @@ lab 3/
 │       └── routers/                # Auth, Sessions, Attendance, Students
 │
 └── mobile/                         # Flutter Student Mobile App
-    ├── pubspec.yaml                # Flutter dependencies
+    ├── pubspec.yaml                # Flutter mobile dependencies
+    ├── test/
+    │   └── mobile_auth_and_attendance_test.dart # Mobile integration & widget test suite
     └── lib/
         ├── main.dart               # Mobile entry point
-        ├── models/                 # AttendanceModel, CourseSummary
-        ├── services/               # HTTP client to FastAPI backend
-        └── screens/                # Login & Dashboard screens
+        ├── models/                 # AttendanceHistoryItem, CourseSummary
+        ├── services/               # ApiService with auto-host detection, offline demo, & WebSockets
+        └── screens/
+            ├── login_screen.dart   # Student login, 1-click demos & server configuration modal
+            └── dashboard_screen.dart# Course summaries, 75% rule warnings, real-time alerts & search
 ```
 
 ---
@@ -336,62 +345,92 @@ Run the one-click launch script:
 ```powershell
 .\run_desktop_flutter.bat
 ```
-*(or run `.\run_dektop_flutter.bat` / `.\run_dektop_flutter.app`)*
+*Optional script arguments:*
+* `.\run_desktop_flutter.bat` — Launches the compiled Windows Release binary.
+* `.\run_desktop_flutter.bat --dev` — Compiles and runs live in development mode with `flutter run -d windows`.
+* `.\run_desktop_flutter.bat --build` — Recompiles the Release binary with `flutter build windows` and launches.
 
-This launches the Python AI & SQLite Bridge service on `http://127.0.0.1:8001` and opens the compiled Flutter Windows release binary (`desktop_flutter.exe`):
-* **Live AI Camera Stream:** Real webcam streaming at 30 FPS with YuNet face detection boxes, SFace ArcFace cosine similarity scores, and verification status overlays.
-* **Biometric Enrollment:** 5-angle camera capture averaging face feature vectors into offline SQLite storage (`desktop_attendance.db`).
-* **Automated Session Roster:** 3-consecutive-frame temporal streak verification with auto-queuing into SQLite attendance records.
-* **Manual Attendance Override:** Teacher manual attendance marking and record management with deletion support.
-* **CSV Export:** Real CSV export to `desktop/exports/` for institutional reporting.
-* **Cloud Sync:** Direct sync to FastAPI backend with connection diagnostics and live activity terminal.
-
-Alternatively, execute the compiled release binary directly:
-```powershell
-.\desktop_flutter\build\windows\x64\runner\Release\desktop_flutter.exe
-```
+#### Role-Based Authentication & Workstation Access:
+The workstation features role-based access control with view isolation:
+1. **Administrator Console (`admin` / `admin123`):**
+   * View all attendance records across all courses and sessions.
+   * Full access to 5-sample biometric enrollment via webcam (`desktop_attendance.db`).
+   * Live camera monitoring and cloud database sync terminal.
+2. **Teacher Station (`teacher` / `teacher123`):**
+   * Configure and start/end class lecture sessions.
+   * Real-time 30 FPS camera AI HUD (YuNet face detection + SFace matching + liveness indicator).
+   * View student attendance logs and manual attendance override. Biometric enrollment is restricted.
+3. **Student Portal (`2024-CS-001` or `2025(s)-SE-5` / `student123`):**
+   * Personal self-service dashboard with 4 KPI summary cards (*Classes Attended*, *Latest Marked*, *Verification*, *Academic Standing*).
+   * Filterable attendance history table and personal CSV report export. Camera HUD and enrollment are restricted.
 
 ---
 
-### Step 4: Run the PySide6 Desktop Application (Alternative)
+### Step 4: Run the PySide6/PyQt6 Desktop Application (Alternative)
 ```bash
-cd desktop
-python app/main.py
+python desktop/app/main.py
 ```
 *(or run `.\run_desktop.bat`)*
+* Includes login screen, session controller, 3-consecutive-frame streak tracking, biometric enrollment, and student view isolation.
 
 ---
 
-### Step 5: Run the Student Mobile App
+### Step 5: Run the Student Mobile App (Flutter)
 ```bash
 cd mobile
 flutter pub get
 flutter run
 ```
-* Sign in with Roll Number `2024-CS-001` and password `student123`.
+*Or run as Windows desktop/web client:*
+```bash
+flutter run -d windows
+```
+
+#### Student Mobile Features:
+* **Student Sign In & 1-Click Demo:** Sign in using Roll Number (`2024-CS-001` or `2025(s)-SE-5`) and password `student123`, or tap 1-click demo buttons.
+* **Intelligent Host Auto-Detection & Server Settings:** Automatically connects to `http://10.0.2.2:8000` (Android emulator) or `http://127.0.0.1:8000` (Desktop/Web/iOS). A server settings modal lets students enter custom WiFi LAN URLs.
+* **Offline Demo Fallback:** If the backend is offline, the app seamlessly provides realistic course summaries and verified logs.
+* **Course Summaries & 75% Rule Warnings:** Displays per-course attendance progress bars with prominent warning badges for any course falling below the institutional 75% threshold.
+* **Attendance History & Search:** Chronological log of all verified lectures, showing timestamp, verification method (Face Biometrics / Manual), match confidence percentages, and status chips.
+* **Live Push Notifications (WebSockets):** Listens to `/ws/student/{id}` to display instant real-time celebration banners whenever attendance is confirmed in the classroom.
 
 ---
 
-## 🧪 6. Rigorous Automated Test Suites
+## 🧪 6. Rigorous Automated Test Suites (28 Tests Passing)
 
-### Python Backend & Desktop Test Suite (`pytest`)
-Run from the workspace root:
+### 1. Python Cloud Backend Test Suite (`pytest`)
 ```powershell
-python -m pytest
+pytest backend/test_api_and_pipeline.py backend/test_eda.py -v
 ```
-- **14 passed** in ~4 seconds:
-  - `backend/test_api_and_pipeline.py`: Auth, JWT, session permissions, idempotent batch uploads, student self-service.
-  - `backend/test_eda.py`: EventBus publish/subscribe, async workers, and AuditLog persistence.
-  - `desktop/test_desktop_architecture.py`: Desktop MVC, signal buffering, multi-face tracking.
-  - `desktop/test_pipeline_and_storage.py`: Cosine similarity math, anti-spoof liveness variance, SQLite queue, bridge API.
+- **7 passed** in ~4 seconds:
+  - `backend/test_api_and_pipeline.py`: Health check, teacher & student JWT auth, session permissions, idempotent batch uploads, student self-service endpoints.
+  - `backend/test_eda.py`: EventBus publish/subscribe, decoupled subscriber loops, and AuditLog commits.
 
-### Flutter Desktop Test Suite (`flutter test`)
-Run from `desktop_flutter`:
+### 2. Python Edge Desktop Test Suite (`pytest`)
+```powershell
+pytest desktop/test_desktop_architecture.py desktop/test_pipeline_and_storage.py desktop/test_role_auth_and_views.py -v
+```
+- **11 passed** in ~5 seconds:
+  - `desktop/test_desktop_architecture.py`: Desktop MVC, signal buffering, and multi-face tracker streaks.
+  - `desktop/test_pipeline_and_storage.py`: Cosine similarity math, anti-spoof liveness variance, SQLite queue, and FastAPI bridge service REST endpoints.
+  - `desktop/test_role_auth_and_views.py`: Role authentication, biometric student login, student attendance query isolation, and PyQt6 window view gating.
+
+### 3. Flutter Desktop Workstation Test Suite (`flutter test`)
 ```powershell
 cd desktop_flutter
 flutter test
 ```
-- **8 passed** in ~16 seconds:
-  - `test/bridge_client_test.dart`: Session state, camera toggle, enrollment/deletion, simulation matching, cloud sync.
-  - `test/widget_test.dart`: Full UI rendering, responsive layout checks, navigation across all 4 workstation screens, manual override and sync actions.
+- **9 passed** in ~18 seconds:
+  - `test/bridge_client_test.dart`: Session state, camera streaming state, biometric enrollment/deletion, simulation matching, and cloud sync.
+  - `test/enrollment_test.dart`: Biometric registration form inputs and directory table rendering.
+  - `test/role_auth_test.dart`: End-to-end Admin, Teacher, and Student login verification, view isolation, and logout.
+  - `test/widget_test.dart`: UI rendering, layout responsiveness, and workstation controls.
+
+### 4. Flutter Student Mobile App Test Suite (`flutter test`)
+```powershell
+cd mobile
+flutter test
+```
+- **1 passed (comprehensive suite)** in ~2 seconds:
+  - `test/mobile_auth_and_attendance_test.dart`: Sign-in, 1-click demo access, summary KPI metrics, 75% threshold warning indicators, attendance logs timeline, live search filtering, and logout.
 
