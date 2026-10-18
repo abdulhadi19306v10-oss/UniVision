@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, Slot, QTimer, QSize
 
 from .theme import NEUMORPHIC_DARK_QSS
 from .icons import create_vector_icon
+from .login_view import LoginView
 from ..events.event_bus import desktop_event_bus
 from ..storage.local_db import LocalStorage
 from ..storage.sync_client import CloudSyncClient
@@ -53,6 +54,9 @@ class MainWindow(QMainWindow):
         self.sync_controller = SyncController(self.storage, self.sync_client)
         self.enrollment_controller = EnrollmentController(self.storage, self.camera_worker)
 
+        # Authenticated user session state
+        self.current_user = None
+
         # Session tracking state
         self.session_start_time = None
         self.session_timer = QTimer(self)
@@ -73,17 +77,26 @@ class MainWindow(QMainWindow):
         self.update_sync_badge_count()
 
     def setup_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        root_layout = QHBoxLayout(central_widget)
+        # Master stacked layout: Index 0 = Login View, Index 1 = Authenticated Dashboard
+        self.main_stack = QStackedWidget()
+        self.setCentralWidget(self.main_stack)
+
+        # 0. Login Interface View
+        self.login_view = LoginView(storage=self.storage, sync_client=self.sync_client)
+        self.login_view.login_successful.connect(self.on_login_success)
+        self.main_stack.addWidget(self.login_view)
+
+        # 1. Main Application Dashboard
+        dashboard_widget = QWidget()
+        root_layout = QHBoxLayout(dashboard_widget)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # 1. Left Navigation Sidebar
+        # Left Navigation Sidebar
         sidebar = self.build_sidebar()
         root_layout.addWidget(sidebar)
 
-        # 2. Right Stacked View Area
+        # Right Stacked View Area
         content_container = QWidget()
         content_layout = QVBoxLayout(content_container)
         content_layout.setContentsMargins(20, 20, 20, 20)
@@ -99,31 +112,36 @@ class MainWindow(QMainWindow):
         self.page_enroll = self.build_enroll_page()
         self.page_records = self.build_records_page()
         self.page_sync = self.build_sync_page()
+        self.page_student = self.build_student_attendance_page()
 
-        self.stacked_pages.addWidget(self.page_live)
-        self.stacked_pages.addWidget(self.page_enroll)
-        self.stacked_pages.addWidget(self.page_records)
-        self.stacked_pages.addWidget(self.page_sync)
+        self.stacked_pages.addWidget(self.page_live)                # Index 0
+        self.stacked_pages.addWidget(self.page_enroll)              # Index 1
+        self.stacked_pages.addWidget(self.page_records)             # Index 2
+        self.stacked_pages.addWidget(self.page_sync)                # Index 3
+        self.stacked_pages.addWidget(self.page_student)             # Index 4
 
         content_layout.addWidget(self.stacked_pages)
         root_layout.addWidget(content_container, 1)
 
+        self.main_stack.addWidget(dashboard_widget)
+        self.main_stack.setCurrentIndex(0) # Start on Login screen
+
     # =========================================================================
-    # SIDEBAR NAVIGATION
+    # SIDEBAR NAVIGATION & ROLE PERMISSIONS
     # =========================================================================
     def build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(240)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(12, 24, 12, 20)
+        layout.setContentsMargins(12, 20, 12, 16)
         layout.setSpacing(8)
 
         # Logo & App Title
         logo_box = QFrame()
         logo_layout = QVBoxLayout(logo_box)
-        logo_layout.setContentsMargins(8, 0, 8, 16)
-        logo_layout.setSpacing(4)
+        logo_layout.setContentsMargins(8, 0, 8, 10)
+        logo_layout.setSpacing(3)
 
         app_title = QLabel("UNIVISION")
         app_title.setFont(QFont("Segoe UI", 18, QFont.Bold))
@@ -137,28 +155,41 @@ class MainWindow(QMainWindow):
         logo_layout.addWidget(app_subtitle)
         layout.addWidget(logo_box)
 
-        # Navigation Buttons with crisp Vector Icons
+        # User Profile Header Card in Sidebar
+        self.user_card = QFrame()
+        self.user_card.setProperty("class", "neumorphic-sunken")
+        uc_layout = QHBoxLayout(self.user_card)
+        uc_layout.setContentsMargins(10, 8, 10, 8)
+        uc_layout.setSpacing(10)
+
+        self.lbl_user_avatar = QLabel()
+        self.lbl_user_avatar.setPixmap(create_vector_icon("user", "#38bdf8", 22).pixmap(22, 22))
+        uc_layout.addWidget(self.lbl_user_avatar)
+
+        u_info = QVBoxLayout()
+        u_info.setSpacing(2)
+        self.lbl_user_name = QLabel("Guest")
+        self.lbl_user_name.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.lbl_user_name.setStyleSheet("color: #f8fafc;")
+
+        self.lbl_user_role_badge = QLabel("NOT LOGGED IN")
+        self.lbl_user_role_badge.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        self.lbl_user_role_badge.setStyleSheet("color: #94a3b8;")
+
+        u_info.addWidget(self.lbl_user_name)
+        u_info.addWidget(self.lbl_user_role_badge)
+        uc_layout.addLayout(u_info, 1)
+        layout.addWidget(self.user_card)
+
+        layout.addSpacing(4)
+
+        # Dynamic Navigation Buttons Container
         self.nav_buttons = []
-        nav_items = [
-            ("video", "Live Monitoring", 0),
-            ("user", "Biometrics Enroll", 1),
-            ("logs", "Attendance Logs", 2),
-            ("cloud", "Cloud & Diagnostics", 3)
-        ]
-
-        for icon_name, text, index in nav_items:
-            btn = QPushButton(f"  {text}")
-            btn.setIcon(create_vector_icon(icon_name, "#94a3b8", 18))
-            btn.setIconSize(QSize(18, 18))
-            btn.setProperty("class", "nav-btn")
-            btn.setCheckable(True)
-            btn.clicked.connect(lambda checked=False, idx=index: self.switch_page(idx))
-            layout.addWidget(btn)
-            self.nav_buttons.append((btn, icon_name))
-
-        self.nav_buttons[0][0].setChecked(True)
-        self.nav_buttons[0][0].setProperty("active", "true")
-        self.nav_buttons[0][0].setIcon(create_vector_icon("video", "#38bdf8", 18))
+        self.nav_container = QWidget()
+        self.nav_layout = QVBoxLayout(self.nav_container)
+        self.nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.nav_layout.setSpacing(6)
+        layout.addWidget(self.nav_container)
 
         layout.addStretch()
 
@@ -166,8 +197,8 @@ class MainWindow(QMainWindow):
         offline_card = QFrame()
         offline_card.setProperty("class", "neumorphic-card")
         offline_layout = QVBoxLayout(offline_card)
-        offline_layout.setContentsMargins(14, 12, 14, 12)
-        offline_layout.setSpacing(4)
+        offline_layout.setContentsMargins(14, 10, 14, 10)
+        offline_layout.setSpacing(3)
 
         offline_title = QLabel("LOCAL STORAGE")
         offline_title.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
@@ -178,12 +209,70 @@ class MainWindow(QMainWindow):
         offline_layout.addWidget(self.lbl_storage_status)
         layout.addWidget(offline_card)
 
+        # Sleek Logout Button
+        self.btn_logout = QPushButton("  Log Out")
+        self.btn_logout.setIcon(create_vector_icon("logout", "#f87171", 14))
+        self.btn_logout.setProperty("class", "btn-danger")
+        self.btn_logout.setFixedHeight(34)
+        self.btn_logout.clicked.connect(self.on_logout_clicked)
+        layout.addWidget(self.btn_logout)
+
         return sidebar
+
+    def rebuild_navigation(self, role: str):
+        """
+        Dynamically configures navigation buttons based strictly on user role:
+        - Admin: See all attendance & enroll new students via biometric + Live + Cloud
+        - Teacher: See student attendance & start class sessions
+        - Student: Check their own attendance records
+        """
+        # Clear previous navigation widgets
+        for btn, _, _ in self.nav_buttons:
+            self.nav_layout.removeWidget(btn)
+            btn.deleteLater()
+        self.nav_buttons.clear()
+
+        if role == "admin":
+            nav_items = [
+                ("logs", "Attendance Logs", 2),
+                ("user", "Biometrics Enroll", 1),
+                ("video", "Live Monitoring", 0),
+                ("cloud", "Cloud & Diagnostics", 3)
+            ]
+            default_index = 2
+        elif role == "teacher":
+            nav_items = [
+                ("video", "Live Class Session", 0),
+                ("logs", "Student Attendance", 2)
+            ]
+            default_index = 0
+        elif role == "student":
+            nav_items = [
+                ("history", "My Attendance", 4)
+            ]
+            default_index = 4
+        else:
+            nav_items = [
+                ("logs", "Attendance Logs", 2)
+            ]
+            default_index = 2
+
+        for icon_name, text, index in nav_items:
+            btn = QPushButton(f"  {text}")
+            btn.setIcon(create_vector_icon(icon_name, "#94a3b8", 18))
+            btn.setIconSize(QSize(18, 18))
+            btn.setProperty("class", "nav-btn")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked=False, idx=index: self.switch_page(idx))
+            self.nav_layout.addWidget(btn)
+            self.nav_buttons.append((btn, icon_name, index))
+
+        self.switch_page(default_index)
 
     def switch_page(self, page_index: int):
         self.stacked_pages.setCurrentIndex(page_index)
-        for i, (btn, icon_name) in enumerate(self.nav_buttons):
-            is_active = (i == page_index)
+        for btn, icon_name, target_idx in self.nav_buttons:
+            is_active = (target_idx == page_index)
             btn.setChecked(is_active)
             btn.setProperty("active", "true" if is_active else "false")
             color = "#38bdf8" if is_active else "#94a3b8"
@@ -197,6 +286,8 @@ class MainWindow(QMainWindow):
             self.refresh_enrolled_table()
         elif page_index == 3:
             self.refresh_diagnostic_log()
+        elif page_index == 4:
+            self.refresh_student_attendance_table()
 
     # =========================================================================
     # TOP HEADER & KPI METRICS BAR
@@ -539,10 +630,16 @@ class MainWindow(QMainWindow):
         card_layout.setSpacing(12)
 
         header_row = QHBoxLayout()
-        title = QLabel("Attendance Queue & Verification Logs")
+        title = QLabel("All Student Attendance & Verification Logs")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         header_row.addWidget(title)
         header_row.addStretch()
+
+        self.inp_records_search = QLineEdit()
+        self.inp_records_search.setPlaceholderText("Filter roll / name / course...")
+        self.inp_records_search.setFixedWidth(200)
+        self.inp_records_search.textChanged.connect(self.filter_records_table)
+        header_row.addWidget(self.inp_records_search)
 
         btn_export = QPushButton("  Export to CSV")
         btn_export.setIcon(create_vector_icon("download", "#ffffff", 14))
@@ -557,8 +654,10 @@ class MainWindow(QMainWindow):
 
         card_layout.addLayout(header_row)
 
-        self.table_records = QTableWidget(0, 7)
-        self.table_records.setHorizontalHeaderLabels(["Queue ID", "Roll No", "Full Name", "Marked Time", "Method", "Confidence", "Sync Status"])
+        self.table_records = QTableWidget(0, 8)
+        self.table_records.setHorizontalHeaderLabels([
+            "Queue ID", "Course", "Roll No", "Full Name", "Marked Time", "Method", "Confidence", "Sync Status"
+        ])
         self.table_records.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_records.verticalHeader().setVisible(False)
         card_layout.addWidget(self.table_records, 1)
@@ -935,22 +1034,250 @@ class MainWindow(QMainWindow):
         pending = self.storage.get_pending_sync_records()
         self.lbl_kpi_sync.setText(f"SYNC QUEUE: {len(pending)}")
 
+    def filter_records_table(self, text: str):
+        query = text.strip().lower()
+        for row in range(self.table_records.rowCount()):
+            course_item = self.table_records.item(row, 1)
+            roll_item = self.table_records.item(row, 2)
+            name_item = self.table_records.item(row, 3)
+            match = (query in (course_item.text().lower() if course_item else "")) or \
+                    (query in (roll_item.text().lower() if roll_item else "")) or \
+                    (query in (name_item.text().lower() if name_item else ""))
+            self.table_records.setRowHidden(row, not match)
+
     def refresh_records_table(self):
-        records = self.storage.get_pending_sync_records()
+        records = self.storage.get_all_attendance_with_sessions()
         self.table_records.setRowCount(0)
         for r in records:
             row = self.table_records.rowCount()
             self.table_records.insertRow(row)
             self.table_records.setItem(row, 0, QTableWidgetItem(str(r["id"])))
-            self.table_records.setItem(row, 1, QTableWidgetItem(r["roll_no"]))
-            self.table_records.setItem(row, 2, QTableWidgetItem(r["full_name"]))
-            self.table_records.setItem(row, 3, QTableWidgetItem(r["marked_at"]))
-            self.table_records.setItem(row, 4, QTableWidgetItem(r["method"]))
-            self.table_records.setItem(row, 5, QTableWidgetItem(f"{r['confidence']:.2f}" if r["confidence"] else "N/A"))
+            course_text = f"{r.get('course_code') or 'CS-401'}"
+            self.table_records.setItem(row, 1, QTableWidgetItem(course_text))
+            self.table_records.setItem(row, 2, QTableWidgetItem(r["roll_no"]))
+            self.table_records.setItem(row, 3, QTableWidgetItem(r["full_name"]))
+            self.table_records.setItem(row, 4, QTableWidgetItem(str(r["marked_at"])[:19].replace("T", " ")))
+            self.table_records.setItem(row, 5, QTableWidgetItem(r["method"].capitalize()))
+            self.table_records.setItem(row, 6, QTableWidgetItem(f"{r['confidence']:.2f}" if r["confidence"] else "N/A"))
             status_item = QTableWidgetItem("QUEUED" if r["synced"] == 0 else "SYNCED")
             status_item.setForeground(QColor("#fbbf24" if r["synced"] == 0 else "#34d399"))
-            self.table_records.setItem(row, 6, status_item)
+            self.table_records.setItem(row, 7, status_item)
         self.update_sync_badge_count()
+
+    # =========================================================================
+    # PAGE 4: STUDENT ATTENDANCE PORTAL
+    # =========================================================================
+    def build_student_attendance_page(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(14)
+
+        # 1. Student Summary KPI Card
+        kpi_card = QFrame()
+        kpi_card.setProperty("class", "neumorphic-card")
+        k_layout = QHBoxLayout(kpi_card)
+        k_layout.setContentsMargins(18, 14, 18, 14)
+        k_layout.setSpacing(16)
+
+        # Stat 1: Total classes attended
+        s1_frame = QFrame()
+        s1_frame.setProperty("class", "neumorphic-sunken")
+        s1_layout = QVBoxLayout(s1_frame)
+        s1_layout.setContentsMargins(12, 8, 12, 8)
+        lbl_s1_t = QLabel("CLASSES ATTENDED")
+        lbl_s1_t.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 0.5px;")
+        self.lbl_student_kpi_total = QLabel("0 Lectures")
+        self.lbl_student_kpi_total.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 16px;")
+        s1_layout.addWidget(lbl_s1_t)
+        s1_layout.addWidget(self.lbl_student_kpi_total)
+        k_layout.addWidget(s1_frame)
+
+        # Stat 2: Latest attendance
+        s2_frame = QFrame()
+        s2_frame.setProperty("class", "neumorphic-sunken")
+        s2_layout = QVBoxLayout(s2_frame)
+        s2_layout.setContentsMargins(12, 8, 12, 8)
+        lbl_s2_t = QLabel("LATEST ATTENDANCE")
+        lbl_s2_t.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 0.5px;")
+        self.lbl_student_kpi_last = QLabel("None")
+        self.lbl_student_kpi_last.setStyleSheet("color: #34d399; font-weight: bold; font-size: 14px;")
+        s2_layout.addWidget(lbl_s2_t)
+        s2_layout.addWidget(self.lbl_student_kpi_last)
+        k_layout.addWidget(s2_frame)
+
+        # Stat 3: Primary Verification
+        s3_frame = QFrame()
+        s3_frame.setProperty("class", "neumorphic-sunken")
+        s3_layout = QVBoxLayout(s3_frame)
+        s3_layout.setContentsMargins(12, 8, 12, 8)
+        lbl_s3_t = QLabel("VERIFICATION")
+        lbl_s3_t.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 0.5px;")
+        self.lbl_student_kpi_method = QLabel("Biometric Face")
+        self.lbl_student_kpi_method.setStyleSheet("color: #c084fc; font-weight: bold; font-size: 14px;")
+        s3_layout.addWidget(lbl_s3_t)
+        s3_layout.addWidget(self.lbl_student_kpi_method)
+        k_layout.addWidget(s3_frame)
+
+        # Stat 4: Academic Standing
+        s4_frame = QFrame()
+        s4_frame.setProperty("class", "neumorphic-sunken")
+        s4_layout = QVBoxLayout(s4_frame)
+        s4_layout.setContentsMargins(12, 8, 12, 8)
+        lbl_s4_t = QLabel("STATUS")
+        lbl_s4_t.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold; letter-spacing: 0.5px;")
+        self.lbl_student_kpi_status = QLabel("Good Standing")
+        self.lbl_student_kpi_status.setStyleSheet("color: #10b981; font-weight: bold; font-size: 14px;")
+        s4_layout.addWidget(lbl_s4_t)
+        s4_layout.addWidget(self.lbl_student_kpi_status)
+        k_layout.addWidget(s4_frame)
+
+        page_layout.addWidget(kpi_card)
+
+        # 2. Student Records Table Card
+        records_card = QFrame()
+        records_card.setProperty("class", "neumorphic-card")
+        r_layout = QVBoxLayout(records_card)
+        r_layout.setContentsMargins(20, 20, 20, 20)
+        r_layout.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        title = QLabel("My Verified Attendance Records")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setStyleSheet("color: #38bdf8;")
+        header_row.addWidget(title)
+        header_row.addStretch()
+
+        self.inp_student_search = QLineEdit()
+        self.inp_student_search.setPlaceholderText("Filter course or date...")
+        self.inp_student_search.setFixedWidth(180)
+        self.inp_student_search.textChanged.connect(self.filter_student_records)
+        header_row.addWidget(self.inp_student_search)
+
+        btn_refresh = QPushButton("  Refresh")
+        btn_refresh.setIcon(create_vector_icon("refresh", "#e2e8f0", 14))
+        btn_refresh.clicked.connect(self.refresh_student_attendance_table)
+        header_row.addWidget(btn_refresh)
+
+        btn_export = QPushButton("  Export My Report (CSV)")
+        btn_export.setIcon(create_vector_icon("download", "#ffffff", 14))
+        btn_export.setProperty("class", "btn-primary")
+        btn_export.clicked.connect(self.on_export_student_csv_clicked)
+        header_row.addWidget(btn_export)
+
+        r_layout.addLayout(header_row)
+
+        self.table_student = QTableWidget(0, 7)
+        self.table_student.setHorizontalHeaderLabels([
+            "Queue ID", "Course Code", "Course Name", "Marked Time", "Method", "Confidence", "Sync Status"
+        ])
+        self.table_student.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_student.verticalHeader().setVisible(False)
+        r_layout.addWidget(self.table_student, 1)
+
+        page_layout.addWidget(records_card)
+        return page
+
+    def refresh_student_attendance_table(self):
+        if not self.current_user:
+            return
+        roll = self.current_user.get("roll_no") or self.current_user.get("username")
+        records = self.storage.get_attendance_for_student(roll_no=roll)
+
+        self.table_student.setRowCount(0)
+        for r in records:
+            row = self.table_student.rowCount()
+            self.table_student.insertRow(row)
+            self.table_student.setItem(row, 0, QTableWidgetItem(str(r["id"])))
+            self.table_student.setItem(row, 1, QTableWidgetItem(r.get("course_code") or "CS-401"))
+            self.table_student.setItem(row, 2, QTableWidgetItem(r.get("course_name") or "Lecture"))
+            self.table_student.setItem(row, 3, QTableWidgetItem(str(r["marked_at"])[:19].replace("T", " ")))
+            self.table_student.setItem(row, 4, QTableWidgetItem(r.get("method", "face").capitalize()))
+            conf_val = r.get("confidence")
+            self.table_student.setItem(row, 5, QTableWidgetItem(f"{conf_val*100:.0f}%" if conf_val else "N/A"))
+            status_item = QTableWidgetItem("QUEUED" if r["synced"] == 0 else "SYNCED")
+            status_item.setForeground(QColor("#fbbf24" if r["synced"] == 0 else "#34d399"))
+            self.table_student.setItem(row, 6, status_item)
+
+        # Update KPI statistics
+        self.lbl_student_kpi_total.setText(f"{len(records)} Lectures")
+        if records:
+            latest_time = str(records[0]["marked_at"])[:16].replace("T", " ")
+            self.lbl_student_kpi_last.setText(latest_time)
+        else:
+            self.lbl_student_kpi_last.setText("No classes yet")
+
+    def filter_student_records(self, text: str):
+        query = text.strip().lower()
+        for row in range(self.table_student.rowCount()):
+            c_code = self.table_student.item(row, 1)
+            c_name = self.table_student.item(row, 2)
+            c_date = self.table_student.item(row, 3)
+            match = (query in (c_code.text().lower() if c_code else "")) or \
+                    (query in (c_name.text().lower() if c_name else "")) or \
+                    (query in (c_date.text().lower() if c_date else ""))
+            self.table_student.setRowHidden(row, not match)
+
+    def on_export_student_csv_clicked(self):
+        if not self.current_user:
+            return
+        roll = self.current_user.get("roll_no") or self.current_user.get("username")
+        clean_roll = roll.replace('/', '_').replace('(', '').replace(')', '')
+        path, _ = QFileDialog.getSaveFileName(self, "Export My Attendance CSV", f"attendance_{clean_roll}.csv", "CSV Files (*.csv)")
+        if path:
+            if self.storage.export_student_attendance_to_csv(roll, path):
+                QMessageBox.information(self, "Export Successful", f"Saved your attendance records to:\n{path}")
+            else:
+                QMessageBox.warning(self, "Notice", "No attendance records found to export.")
+
+    @Slot(dict)
+    def on_login_success(self, user: dict):
+        self.current_user = user
+        role = user.get("role", "student").lower()
+        full_name = user.get("full_name", "User")
+        roll_no = user.get("roll_no") or user.get("username", "")
+
+        # Update user profile card in sidebar
+        self.lbl_user_name.setText(full_name)
+        if role == "admin":
+            self.lbl_user_avatar.setPixmap(create_vector_icon("shield", "#38bdf8", 22).pixmap(22, 22))
+            self.lbl_user_role_badge.setText("ADMINISTRATOR")
+            self.lbl_user_role_badge.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 8px;")
+            self.lbl_active_header.setText("Administrator Console — All Attendance Records & Biometrics Station")
+        elif role == "teacher":
+            self.lbl_user_avatar.setPixmap(create_vector_icon("chalkboard", "#34d399", 22).pixmap(22, 22))
+            self.lbl_user_role_badge.setText("TEACHER")
+            self.lbl_user_role_badge.setStyleSheet("color: #34d399; font-weight: bold; font-size: 8px;")
+            self.lbl_active_header.setText(f"Teacher Portal — {full_name} | Ready to start lecture sessions")
+        elif role == "student":
+            self.lbl_user_avatar.setPixmap(create_vector_icon("student", "#c084fc", 22).pixmap(22, 22))
+            self.lbl_user_role_badge.setText(f"STUDENT • {roll_no}")
+            self.lbl_user_role_badge.setStyleSheet("color: #c084fc; font-weight: bold; font-size: 8px;")
+            self.lbl_active_header.setText(f"Student Portal — Welcome {full_name} ({roll_no})")
+
+        # Dynamically build sidebar navigation for this role
+        self.rebuild_navigation(role)
+
+        # Switch to authenticated dashboard
+        self.main_stack.setCurrentIndex(1)
+        self.update_sync_badge_count()
+
+    def on_logout_clicked(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Logout",
+            "Are you sure you want to log out of UniVision?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if self.camera_worker.isRunning():
+                self.on_toggle_camera_clicked()
+            if self.session_controller.active_local_session_id is not None:
+                self.session_controller.end_session()
+            self.current_user = None
+            self.login_view.reset_view()
+            self.main_stack.setCurrentIndex(0)
 
     def refresh_enrolled_table(self):
         students = self.storage.list_enrolled_students()

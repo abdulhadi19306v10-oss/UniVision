@@ -110,5 +110,59 @@ def create_vector_icon(icon_type: str, color_hex: str = "#94a3b8", size: int = 2
         painter.drawLine(QPointF(w / 2, pad + 2), QPointF(w / 2, h - pad - 2))
         painter.drawLine(QPointF(pad + 2, h / 2), QPointF(w - pad - 2, h / 2))
 
+    elif icon_type == "logout":
+        # Door frame + arrow pointing right
+        painter.drawPolyline([
+            QPointF(11, pad + 2),
+            QPointF(pad + 2, pad + 2),
+            QPointF(pad + 2, h - pad - 2),
+            QPointF(11, h - pad - 2)
+        ])
+        painter.drawLine(QPointF(8, h / 2), QPointF(w - pad - 2, h / 2))
+        painter.drawLine(QPointF(w - pad - 6, h / 2 - 4), QPointF(w - pad - 2, h / 2))
+        painter.drawLine(QPointF(w - pad - 6, h / 2 + 4), QPointF(w - pad - 2, h / 2))
+
+    elif icon_type == "lock":
+        # Padlock body + shackle
+        painter.drawRoundedRect(QRectF(pad + 3, 10, 12, 9), 2, 2)
+        painter.drawArc(QRectF(pad + 5, pad + 1, 8, 10), 0 * 16, 180 * 16)
+
+    elif icon_type == "shield":
+        # Admin shield outline
+        shield_pts = QPolygonF([
+            QPointF(w / 2, pad + 1),
+            QPointF(w - pad - 2, pad + 4),
+            QPointF(w - pad - 3, h - 9),
+            QPointF(w / 2, h - pad - 1),
+            QPointF(pad + 3, h - 9),
+            QPointF(pad + 2, pad + 4)
+        ])
+        painter.drawPolygon(shield_pts)
+
+    elif icon_type == "chalkboard":
+        # Teacher blackboard
+        painter.drawRoundedRect(QRectF(pad + 1, pad + 2, 16, 12), 2, 2)
+        painter.drawLine(QPointF(pad + 1, h - pad - 3), QPointF(w - pad - 1, h - pad - 3))
+        painter.drawLine(QPointF(pad + 4, h - pad - 3), QPointF(pad + 2, h - pad + 1))
+        painter.drawLine(QPointF(w - pad - 4, h - pad - 3), QPointF(w - pad - 2, h - pad + 1))
+
+    elif icon_type == "student":
+        # Mortarboard graduation cap
+        cap_poly = QPolygonF([
+            QPointF(w / 2, pad + 2),
+            QPointF(w - pad - 1, 8),
+            QPointF(w / 2, 13),
+            QPointF(pad + 1, 8)
+        ])
+        painter.drawPolygon(cap_poly)
+        painter.drawArc(QRectF(pad + 4, 11, 10, 7), 180 * 16, 180 * 16)
+        painter.drawLine(QPointF(w - pad - 1, 8), QPointF(w - pad - 1, 15))
+
+    elif icon_type == "history":
+        # Clock face + hands
+        painter.drawEllipse(QPointF(w / 2, h / 2), 7.5, 7.5)
+        painter.drawLine(QPointF(w / 2, h / 2), QPointF(w / 2, 7))
+        painter.drawLine(QPointF(w / 2, h / 2), QPointF(15, h / 2))
+
     painter.end()
     return QIcon(pixmap)

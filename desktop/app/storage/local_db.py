@@ -66,7 +66,141 @@ class LocalStorage:
                 UNIQUE(local_session_id, student_id)
             )
             """)
+
+            # 4. Desktop Station Users (Admin, Teacher, Student)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                full_name TEXT NOT NULL,
+                roll_no TEXT,
+                created_at TEXT NOT NULL
+            )
+            """)
             conn.commit()
+
+            # Seed default admin and teacher if empty
+            cursor.execute("SELECT COUNT(*) FROM app_users")
+            if cursor.fetchone()[0] == 0:
+                now_str = datetime.now(timezone.utc).isoformat()
+                admin_hash = self.hash_password("admin123")
+                teacher_hash = self.hash_password("teacher123")
+                student_hash = self.hash_password("student123")
+                cursor.execute("""
+                INSERT INTO app_users (username, email, password_hash, role, full_name, roll_no, created_at)
+                VALUES 
+                ('admin', 'admin@univision.edu', ?, 'admin', 'System Administrator', NULL, ?),
+                ('teacher', 'teacher@school.edu', ?, 'teacher', 'Prof. Alan Turing', NULL, ?),
+                ('2024-CS-001', 'alice@student.edu', ?, 'student', 'Alice Johnson', '2024-CS-001', ?)
+                """, (admin_hash, now_str, teacher_hash, now_str, student_hash, now_str))
+                conn.commit()
+
+            # Sync any enrolled students into app_users for instant student login
+            cursor.execute("SELECT student_id, roll_no, full_name FROM enrolled_students")
+            for sid, rno, fname in cursor.fetchall():
+                cursor.execute("SELECT id FROM app_users WHERE LOWER(username) = LOWER(?) OR (roll_no IS NOT NULL AND LOWER(roll_no) = LOWER(?))", (rno, rno))
+                if not cursor.fetchone():
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    st_hash = self.hash_password("student123")
+                    clean_roll = rno.lower().replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+                    cursor.execute("""
+                    INSERT OR IGNORE INTO app_users (username, email, password_hash, role, full_name, roll_no, created_at)
+                    VALUES (?, ?, ?, 'student', ?, ?, ?)
+                    """, (rno, f"{clean_roll}@student.edu", st_hash, fname, rno, now_str))
+            conn.commit()
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        import hashlib
+        return hashlib.sha256(f"univision_{password}".encode('utf-8')).hexdigest()
+
+    def verify_user_password(self, plain_password: str, stored_hash: str) -> bool:
+        if not stored_hash or not plain_password:
+            return False
+        if stored_hash == self.hash_password(plain_password):
+            return True
+        if stored_hash == plain_password:
+            return True
+        if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$"):
+            try:
+                import bcrypt
+                return bcrypt.checkpw(plain_password.encode('utf-8'), stored_hash.encode('utf-8'))
+            except Exception:
+                pass
+        return False
+
+    def authenticate_user(self, identifier: str, password: str, role: Optional[str] = None) -> Optional[dict]:
+        clean_id = (identifier or "").strip()
+        clean_pwd = (password or "").strip()
+        if not clean_id or not clean_pwd:
+            return None
+
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Query app_users by username, email, or roll_no
+            cursor.execute("""
+            SELECT * FROM app_users 
+            WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) OR (roll_no IS NOT NULL AND LOWER(roll_no) = LOWER(?))
+            """, (clean_id, clean_id, clean_id))
+            user_row = cursor.fetchone()
+
+            # Fallback: Check if student exists in enrolled_students but not yet in app_users
+            if not user_row:
+                cursor.execute("SELECT * FROM enrolled_students WHERE LOWER(roll_no) = LOWER(?)", (clean_id,))
+                enrolled_row = cursor.fetchone()
+                if enrolled_row:
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    st_hash = self.hash_password("student123")
+                    rno = enrolled_row["roll_no"]
+                    fname = enrolled_row["full_name"]
+                    clean_roll = rno.lower().replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+                    cursor.execute("""
+                    INSERT OR IGNORE INTO app_users (username, email, password_hash, role, full_name, roll_no, created_at)
+                    VALUES (?, ?, ?, 'student', ?, ?, ?)
+                    """, (rno, f"{clean_roll}@student.edu", st_hash, fname, rno, now_str))
+                    conn.commit()
+
+                    cursor.execute("SELECT * FROM app_users WHERE LOWER(roll_no) = LOWER(?)", (clean_id,))
+                    user_row = cursor.fetchone()
+
+            if not user_row:
+                return None
+
+            user_dict = dict(user_row)
+
+            # Check password (allow default "student123" or student's roll number if student)
+            pw_ok = self.verify_user_password(clean_pwd, user_dict["password_hash"])
+            if not pw_ok and user_dict["role"] == "student":
+                if clean_pwd == "student123" or (user_dict.get("roll_no") and clean_pwd.lower() == user_dict["roll_no"].lower()):
+                    pw_ok = True
+
+            if not pw_ok:
+                return None
+
+            # Check role if required
+            if role and user_dict["role"].lower() != role.lower():
+                return None
+
+            return {
+                "id": user_dict["id"],
+                "username": user_dict["username"],
+                "email": user_dict["email"],
+                "role": user_dict["role"],
+                "full_name": user_dict["full_name"],
+                "roll_no": user_dict.get("roll_no")
+            }
+
+    def list_users(self) -> List[dict]:
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username, email, role, full_name, roll_no, created_at FROM app_users ORDER BY id ASC")
+            return [dict(row) for row in cursor.fetchall()]
 
     # --- Student Biometrics Enrollment ---
     def save_enrolled_student(self, student_id: int, roll_no: str, full_name: str, embedding: np.ndarray):
@@ -77,6 +211,22 @@ class LocalStorage:
             INSERT OR REPLACE INTO enrolled_students (student_id, roll_no, full_name, embedding, enrolled_at)
             VALUES (?, ?, ?, ?, ?)
             """, (student_id, roll_no, full_name, raw_bytes, now_str))
+
+            # Automatically provision student login credentials in app_users
+            st_hash = self.hash_password("student123")
+            clean_roll = roll_no.lower().replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM app_users WHERE LOWER(username) = LOWER(?) OR (roll_no IS NOT NULL AND LOWER(roll_no) = LOWER(?))", (roll_no, roll_no))
+            existing = cursor.fetchone()
+            if existing:
+                cursor.execute("""
+                UPDATE app_users SET full_name = ?, roll_no = ? WHERE id = ?
+                """, (full_name, roll_no, existing[0]))
+            else:
+                cursor.execute("""
+                INSERT OR IGNORE INTO app_users (username, email, password_hash, role, full_name, roll_no, created_at)
+                VALUES (?, ?, ?, 'student', ?, ?, ?)
+                """, (roll_no, f"{clean_roll}@student.edu", st_hash, full_name, roll_no, now_str))
             conn.commit()
 
     def get_all_enrolled_embeddings(self) -> Dict[int, np.ndarray]:
@@ -303,3 +453,58 @@ class LocalStorage:
                 })
         return True
 
+    def get_attendance_for_student(self, roll_no: Optional[str] = None, student_id: Optional[int] = None) -> List[dict]:
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            query = """
+            SELECT q.*, s.course_code, s.course_name, s.started_at as session_started_at
+            FROM attendance_queue q
+            LEFT JOIN local_sessions s ON q.local_session_id = s.id
+            WHERE 1=1
+            """
+            params = []
+            if roll_no:
+                query += " AND (q.roll_no = ? OR LOWER(q.roll_no) = LOWER(?))"
+                params.extend([roll_no, roll_no])
+            elif student_id is not None:
+                query += " AND q.student_id = ?"
+                params.append(student_id)
+            query += " ORDER BY q.marked_at DESC, q.id DESC"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_attendance_with_sessions(self) -> List[dict]:
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT q.*, s.course_code, s.course_name, s.started_at as session_started_at
+            FROM attendance_queue q
+            LEFT JOIN local_sessions s ON q.local_session_id = s.id
+            ORDER BY q.marked_at DESC, q.id DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def export_student_attendance_to_csv(self, roll_no: str, target_file_path: str) -> bool:
+        import csv
+        records = self.get_attendance_for_student(roll_no=roll_no)
+        if not records:
+            return False
+        with open(target_file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=["id", "local_session_id", "course_code", "course_name", "roll_no", "full_name", "marked_at", "method", "confidence", "synced"])
+            writer.writeheader()
+            for r in records:
+                writer.writerow({
+                    "id": r["id"],
+                    "local_session_id": r["local_session_id"],
+                    "course_code": r.get("course_code") or "N/A",
+                    "course_name": r.get("course_name") or "N/A",
+                    "roll_no": r["roll_no"],
+                    "full_name": r["full_name"],
+                    "marked_at": r["marked_at"],
+                    "method": r["method"],
+                    "confidence": f"{r['confidence']:.2f}" if r['confidence'] is not None else "N/A",
+                    "synced": "YES" if r["synced"] == 1 else "PENDING"
+                })
+        return True
