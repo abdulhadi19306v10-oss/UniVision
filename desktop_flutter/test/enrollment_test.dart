@@ -9,7 +9,15 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
 
-    final testClient = BridgeClient(enableBackgroundPolling: false);
+    final testClient = BridgeClient(
+      enableBackgroundPolling: false,
+      initialUser: const {
+        'id': 1,
+        'username': 'admin',
+        'role': 'admin',
+        'full_name': 'System Administrator',
+      },
+    );
     addTearDown(() => testClient.dispose());
 
     await tester.pumpWidget(UniVisionDesktopApp(client: testClient));

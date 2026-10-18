@@ -680,6 +680,48 @@ async def sync_to_cloud(req: SyncReq):
     await broadcast_event("sync_completed", stats)
     return stats
 
+class LoginReq(BaseModel):
+    identifier: str
+    password: str
+    role: Optional[str] = None
+
+@app.post("/api/auth/login")
+async def login_user(req: LoginReq):
+    user = storage.authenticate_user(req.identifier, req.password, role=req.role)
+    if not user and req.role == "teacher" and sync_client:
+        try:
+            ok = sync_client.login_teacher(req.identifier, req.password)
+            if ok:
+                user = {
+                    "id": 999,
+                    "username": req.identifier,
+                    "email": req.identifier,
+                    "role": "teacher",
+                    "full_name": "Teacher (Cloud Authenticated)",
+                    "roll_no": None
+                }
+        except Exception:
+            pass
+    if user:
+        return {"success": True, "user": user}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.get("/api/student/attendance")
+async def get_student_attendance(roll_no: Optional[str] = None, student_id: Optional[int] = None):
+    return storage.get_attendance_for_student(roll_no=roll_no, student_id=student_id)
+
+@app.post("/api/student/attendance/export")
+async def export_student_attendance(roll_no: str):
+    export_dir = os.path.join(desktop_dir, "exports")
+    os.makedirs(export_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_roll = roll_no.replace('/', '_').replace('(', '').replace(')', '')
+    target_file = os.path.join(export_dir, f"attendance_{clean_roll}_{timestamp}.csv")
+    success = storage.export_student_attendance_to_csv(roll_no, target_file)
+    if success:
+        return {"status": "EXPORTED", "file_path": target_file}
+    raise HTTPException(status_code=400, detail="No attendance records available for this student")
+
 @app.get("/api/ping")
 async def ping():
     return {"status": "ONLINE", "timestamp": time.time(), "engine": "AiCameraEngine"}

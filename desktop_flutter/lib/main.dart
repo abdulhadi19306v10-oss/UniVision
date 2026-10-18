@@ -7,6 +7,8 @@ import 'screens/live_monitoring_screen.dart';
 import 'screens/enrollment_screen.dart';
 import 'screens/attendance_logs_screen.dart';
 import 'screens/cloud_diagnostics_screen.dart';
+import 'screens/student_attendance_screen.dart';
+import 'screens/login_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,6 +42,7 @@ class _MainWorkstationViewState extends State<MainWorkstationView> {
   late final BridgeClient _client;
   bool _ownsClient = false;
   int _selectedTab = 0;
+  String? _lastRole;
 
   @override
   void initState() {
@@ -61,18 +64,40 @@ class _MainWorkstationViewState extends State<MainWorkstationView> {
     super.dispose();
   }
 
+  void _syncDefaultTabForRole(String role) {
+    if (_lastRole != role) {
+      _lastRole = role;
+      if (role == 'student') {
+        _selectedTab = 4; // Default to My Attendance
+      } else {
+        _selectedTab = 0; // Default to Live Class / Live Monitoring
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: _client,
       builder: (context, _) {
+        final user = _client.currentUser;
+
+        // If not logged in, show the LoginScreen
+        if (user == null) {
+          _lastRole = null;
+          return LoginScreen(client: _client);
+        }
+
+        final role = (user['role'] ?? 'admin').toString().toLowerCase();
+        _syncDefaultTabForRole(role);
+
         return Scaffold(
           body: Row(
             children: [
               // Sidebar Navigation
               Sidebar(
                 selectedIndex: _selectedTab,
+                client: _client,
                 onItemSelected: (index) {
                   setState(() => _selectedTab = index);
                 },
@@ -93,10 +118,11 @@ class _MainWorkstationViewState extends State<MainWorkstationView> {
                         child: IndexedStack(
                           index: _selectedTab,
                           children: [
-                            LiveMonitoringScreen(client: _client),
-                            EnrollmentScreen(client: _client),
-                            AttendanceLogsScreen(client: _client),
-                            CloudDiagnosticsScreen(client: _client),
+                            LiveMonitoringScreen(client: _client),     // 0
+                            EnrollmentScreen(client: _client),         // 1
+                            AttendanceLogsScreen(client: _client),     // 2
+                            CloudDiagnosticsScreen(client: _client),   // 3
+                            StudentAttendanceScreen(client: _client),  // 4
                           ],
                         ),
                       ),

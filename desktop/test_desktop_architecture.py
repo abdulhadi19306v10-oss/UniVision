@@ -1,6 +1,9 @@
 import sys
 import os
-from PySide6.QtCore import QCoreApplication
+try:
+    from PyQt6.QtWidgets import QApplication
+except ImportError:
+    from PySide6.QtWidgets import QApplication
 
 # ponytail: robust desktop module resolution preventing root test import collision
 desktop_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +23,7 @@ except ImportError:
 
 def test_desktop_mvc_eda():
     print("Testing Desktop MVC + Event-Driven Architecture...")
-    app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
 
     test_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_desktop.db")
     if os.path.exists(test_db):
